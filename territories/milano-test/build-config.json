@@ -1,0 +1,23 @@
+{
+  "configVersion": "otp-graph-build-v1",
+  "graph": "output/graph.obj",
+  "buildReportDir": "output/build-report",
+  "dataImportReport": true,
+  "transitModelTimeZone": "Europe/Rome",
+  "transitServiceStart": "-P1M",
+  "transitServiceEnd": "P3M",
+  "osm": [
+    {
+      "source": "input/osm.pbf",
+      "timeZone": "Europe/Rome",
+      "osmTagMapping": "default"
+    }
+  ],
+  "transitFeeds": [
+    {
+      "type": "gtfs",
+      "feedId": "MILANO-ATM",
+      "source": "input/gtfs.zip"
+    }
+  ]
+}

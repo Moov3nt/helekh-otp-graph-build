@@ -1,0 +1,7 @@
+{
+  "otpVersion": "2.9.0",
+  "otpJarUrl": "https://repo.maven.apache.org/maven2/org/opentripplanner/otp-shaded/2.9.0/otp-shaded-2.9.0.jar",
+  "otpJarBytes": 183261358,
+  "otpJarSha256": "6bcd699f9a5d3f4f1ef213aa9a629ac2e808fb771fef3ba137df6c8e56f6b9ff",
+  "javaImage": "eclipse-temurin:25.0.4_7-jre-noble@sha256:b4c93a50fc67612798db73d68ca3b0ee4ebdd51736e59cca370e689b9797037e"
+}

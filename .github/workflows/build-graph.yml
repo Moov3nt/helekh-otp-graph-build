@@ -1,0 +1,199 @@
+name: Build OTP graph
+
+# Manual start only. Builds an OpenTripPlanner 2.9.0 graph from public, redistributable inputs on a free GitHub-hosted runner,
+# checks every input, gates on the temporal validity of the GTFS feed, proves the graph by loading it and routing for real,
+# and uploads graph + manifest + notices as an artifact. No paid service, no secret, no code from any other repository.
+on:
+  workflow_dispatch:
+    inputs:
+      territory:
+        description: "Folder under territories/ (build-config.json + sources.json)"
+        required: true
+        default: milano-test
+      expected_gtfs_sha256:
+        description: "Pin the GTFS feed to this SHA-256 (empty = accept whatever the publisher serves now; the hash is recorded either way)"
+        required: false
+        default: "f0959217d549f278d59f4ef60bdb5bce8b6fc3dea2efa84c9ff7f213973ea1cc"
+      min_future_days:
+        description: "The feed must have service at least this many days after today"
+        required: true
+        default: "1"
+      gtfs_must_cover_until:
+        description: "Optional YYYY-MM-DD: the feed must have service until at least this date"
+        required: false
+        default: ""
+      heap_gb:
+        description: "JVM heap for the graph build (the runner has 16 GB)"
+        required: true
+        default: "12"
+      retention_days:
+        description: "Artifact retention in days (1-90)"
+        required: true
+        default: "7"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-otp-graph
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      TERRITORY: ${{ inputs.territory }}
+      EXPECTED_GTFS_SHA256: ${{ inputs.expected_gtfs_sha256 }}
+      MIN_FUTURE_DAYS: ${{ inputs.min_future_days }}
+      MUST_COVER_UNTIL: ${{ inputs.gtfs_must_cover_until }}
+      HEAP_GB: ${{ inputs.heap_gb }}
+      RETENTION_DAYS: ${{ inputs.retention_days }}
+    steps:
+      - name: Check out the pipeline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs and the runner
+        run: |
+          set -euo pipefail
+          [[ "$TERRITORY" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "::error::territory must be lower-case letters, digits and hyphens"; exit 1; }
+          [[ -f "territories/$TERRITORY/build-config.json" && -f "territories/$TERRITORY/sources.json" ]] || { echo "::error::territory '$TERRITORY' has no build-config.json and sources.json"; exit 1; }
+          [[ "$MIN_FUTURE_DAYS" =~ ^[0-9]{1,3}$ ]] || { echo "::error::min_future_days must be a whole number"; exit 1; }
+          [[ -z "$MUST_COVER_UNTIL" || "$MUST_COVER_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::gtfs_must_cover_until must be YYYY-MM-DD"; exit 1; }
+          [[ -z "$EXPECTED_GTFS_SHA256" || "$EXPECTED_GTFS_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::expected_gtfs_sha256 must be 64 lower-case hex digits or empty"; exit 1; }
+          [[ "$HEAP_GB" =~ ^[0-9]{1,2}$ && "$HEAP_GB" -ge 4 && "$HEAP_GB" -le 13 ]] || { echo "::error::heap_gb must be between 4 and 13 on a 16 GB runner"; exit 1; }
+          [[ "$RETENTION_DAYS" =~ ^[0-9]{1,2}$ && "$RETENTION_DAYS" -ge 1 && "$RETENTION_DAYS" -le 90 ]] || { echo "::error::retention_days must be between 1 and 90"; exit 1; }
+          memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          disk_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "cpus=$(nproc) memory_kb=$memory_kb disk_free_gb=$disk_gb"
+          [[ "$memory_kb" -ge 14500000 ]] || { echo "::error::the runner has less than ~14.5 GB RAM; the build needs it"; exit 1; }
+          [[ "$disk_gb" -ge 10 ]] || { echo "::error::less than 10 GB free disk"; exit 1; }
+          command -v zstd >/dev/null || sudo apt-get install -y -qq zstd
+          mkdir -p work/input work/output dist meta
+
+      - name: Download the OTP jar and verify it
+        run: |
+          set -euo pipefail
+          url=$(jq -r .otpJarUrl versions.json); sha=$(jq -r .otpJarSha256 versions.json)
+          curl -fsSL --retry 3 --max-time 600 -o otp.jar "$url"
+          echo "$sha  otp.jar" | sha256sum -c -
+
+      - name: Download OpenStreetMap extract and verify it
+        run: |
+          set -euo pipefail
+          s="territories/$TERRITORY/sources.json"
+          url=$(jq -r .osm.url "$s"); md5url=$(jq -r .osm.md5Url "$s"); sha=$(jq -r .osm.sha256 "$s"); bytes=$(jq -r .osm.bytes "$s")
+          curl -fsSL --retry 3 --max-time 1800 -o work/input/osm.pbf "$url"
+          [[ "$(stat -c %s work/input/osm.pbf)" == "$bytes" ]] || { echo "::error::OSM size differs from the pinned size"; exit 1; }
+          echo "$sha  work/input/osm.pbf" | sha256sum -c -
+          published=$(curl -fsSL --retry 3 "$md5url" | awk '{print $1}')
+          [[ "$(md5sum work/input/osm.pbf | awk '{print $1}')" == "$published" ]] || { echo "::error::OSM MD5 differs from the one Geofabrik publishes"; exit 1; }
+          echo "OSM verified against the pinned SHA-256 and the publisher's MD5"
+
+      - name: Download the GTFS feed, verify it and check its temporal validity
+        id: gtfs
+        run: |
+          set -euo pipefail
+          s="territories/$TERRITORY/sources.json"
+          url=$(jq -r .gtfs.url "$s"); zone=$(jq -r .timezone "$s")
+          curl -fsSL --retry 3 --max-time 600 -o work/input/gtfs.zip "$url"
+          unzip -tq work/input/gtfs.zip
+          sha=$(sha256sum work/input/gtfs.zip | awk '{print $1}'); bytes=$(stat -c %s work/input/gtfs.zip)
+          echo "gtfs sha256=$sha bytes=$bytes"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"; echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
+          if [[ -n "$EXPECTED_GTFS_SHA256" && "$sha" != "$EXPECTED_GTFS_SHA256" ]]; then
+            echo "::error::The publisher now serves a different feed ($sha). Re-run with expected_gtfs_sha256 empty or set to this value to accept it."
+            exit 1
+          fi
+          unzip -oq work/input/gtfs.zip calendar.txt calendar_dates.txt trips.txt feed_info.txt -d meta/gtfs || true
+          set +e
+          node scripts/check-gtfs-validity.mjs --dir meta/gtfs --timezone "$zone" --min-future-days "$MIN_FUTURE_DAYS" --must-cover-until "$MUST_COVER_UNTIL" --out meta/validity.json
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 ]]; then echo "::error::GTFS temporal validity gate failed (see the report above); no graph is built from an expired or too-short feed"; exit "$status"; fi
+          echo "last_service_date=$(jq -r .effective.lastServiceDate meta/validity.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare the build directory
+        run: |
+          set -euo pipefail
+          cp config/router-config.json config/otp-config.json work/
+          cp "territories/$TERRITORY/build-config.json" work/build-config.json
+          cat work/build-config.json work/router-config.json work/otp-config.json | sha256sum | awk '{print $1}' > meta/config.sha256
+          docker pull "$(jq -r .javaImage versions.json)"
+
+      - name: Build the graph
+        timeout-minutes: 100
+        run: |
+          set -euo pipefail
+          image=$(jq -r .javaImage versions.json)
+          started=$(date +%s)
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e "JAVA_TOOL_OPTIONS=-Xmx${HEAP_GB}G" \
+            -v "$PWD/work:/var/opentripplanner" -v "$PWD/otp.jar:/opt/otp/otp.jar:ro" \
+            "$image" java -jar /opt/otp/otp.jar --build --save --abortOnUnknownConfig /var/opentripplanner
+          echo "build seconds: $(( $(date +%s) - started ))"
+          [[ -s work/output/graph.obj ]] || { echo "::error::no graph.obj was produced"; exit 1; }
+          bytes=$(stat -c %s work/output/graph.obj)
+          [[ "$bytes" -gt 50000000 ]] || { echo "::error::graph.obj is implausibly small ($bytes bytes)"; exit 1; }
+          sha256sum work/output/graph.obj | awk '{print $1}' > meta/graph.sha256
+          echo "graph bytes=$bytes sha256=$(cat meta/graph.sha256)"
+
+      - name: Load the graph and route for real
+        timeout-minutes: 20
+        env:
+          LAST_SERVICE_DATE: ${{ steps.gtfs.outputs.last_service_date }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r .javaImage versions.json)
+          mkdir -p serve
+          ln work/output/graph.obj serve/graph.obj
+          cp config/router-config.json config/otp-config.json serve/
+          docker run -d --name otp-smoke --user "$(id -u):$(id -g)" -e HOME=/tmp -e JAVA_TOOL_OPTIONS=-Xmx6G -p 127.0.0.1:8080:8080 \
+            -v "$PWD/serve/graph.obj:/var/opentripplanner/graph.obj:ro" \
+            -v "$PWD/serve/router-config.json:/var/opentripplanner/router-config.json:ro" \
+            -v "$PWD/serve/otp-config.json:/var/opentripplanner/otp-config.json:ro" \
+            -v "$PWD/otp.jar:/opt/otp/otp.jar:ro" \
+            "$image" java -jar /opt/otp/otp.jar --load --abortOnUnknownConfig /var/opentripplanner
+          set +e
+          node scripts/otp-smoke.mjs --base http://127.0.0.1:8080 --sources "territories/$TERRITORY/sources.json" --last-service-date "$LAST_SERVICE_DATE" --out meta/smoke.json
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 ]]; then docker logs --tail 80 otp-smoke || true; echo "::error::the loaded graph returned no transit itinerary"; docker rm -f otp-smoke >/dev/null 2>&1 || true; exit "$status"; fi
+          docker rm -f otp-smoke >/dev/null
+
+      - name: Package graph, manifest and notices
+        env:
+          GTFS_SHA256: ${{ steps.gtfs.outputs.sha256 }}
+          GTFS_BYTES: ${{ steps.gtfs.outputs.bytes }}
+        run: |
+          set -euo pipefail
+          s="territories/$TERRITORY/sources.json"
+          zstd -T0 -10 --long=27 -q -o dist/graph.obj.zst work/output/graph.obj
+          zstd -tq dist/graph.obj.zst
+          node scripts/write-manifest.mjs --out dist/manifest.json --territory "$TERRITORY" --versions versions.json --sources "$s" \
+            --osm-sha256 "$(jq -r .osm.sha256 "$s")" --gtfs-sha256 "$GTFS_SHA256" --gtfs-bytes "$GTFS_BYTES" \
+            --graph-sha256 "$(cat meta/graph.sha256)" --graph-bytes "$(stat -c %s work/output/graph.obj)" \
+            --compressed-sha256 "$(sha256sum dist/graph.obj.zst | awk '{print $1}')" --compressed-bytes "$(stat -c %s dist/graph.obj.zst)" \
+            --validity meta/validity.json --smoke meta/smoke.json --config-sha256 "$(cat meta/config.sha256)" \
+            --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA" --heap-gb "$HEAP_GB"
+          cp NOTICE.md dist/NOTICE.md
+          cp meta/validity.json dist/gtfs-validity-report.json
+          cp meta/smoke.json dist/routing-check.json
+          ls -l dist
+          {
+            echo "### OTP graph built"
+            echo "- territory: \`$TERRITORY\`"
+            echo "- usable until (GTFS last service date): \`$(jq -r .usableUntil dist/manifest.json)\`"
+            echo "- graph: $(jq -r .graph.bytes dist/manifest.json) bytes, compressed $(jq -r .graph.compressed.bytes dist/manifest.json) bytes"
+            echo "- routing check: $(jq -r .routingCheck.verdict dist/manifest.json), $(jq -r .routingCheck.itinerariesWithTransit dist/manifest.json) itineraries with transit"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the graph artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otp-graph-${{ inputs.territory }}-${{ github.run_id }}
+          path: dist/
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 0
+          if-no-files-found: error

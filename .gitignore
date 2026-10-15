@@ -1,0 +1,10 @@
+work/
+serve/
+dist/
+meta/
+otp.jar
+*.pbf
+*.zip
+*.obj
+*.zst
+node_modules/

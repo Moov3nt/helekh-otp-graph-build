@@ -1,0 +1,6 @@
+{
+  "configVersion": "otp-graph-build-router-v1",
+  "server": {
+    "apiProcessingTimeout": "15s"
+  }
+}
