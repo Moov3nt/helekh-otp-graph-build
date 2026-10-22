@@ -19,11 +19,11 @@
     "note": "The URL always serves the current feed. Pin a run to one feed version with the expected_gtfs_sha256 input."
   },
   "osm": {
-    "name": "OpenStreetMap extract, Geofabrik nord-ovest, dated 2026-10-08",
-    "url": "https://download.geofabrik.de/europe/italy/nord-ovest-261008.osm.pbf",
-    "md5Url": "https://download.geofabrik.de/europe/italy/nord-ovest-261008.osm.pbf.md5",
-    "bytes": 592387157,
-    "sha256": "f7dac4a69acacb80e6e8cc51dec149fceb96378374a51631e77292d5353b1def",
+    "name": "OpenStreetMap extract, Geofabrik nord-ovest, dated 2026-10-20",
+    "url": "https://download.geofabrik.de/europe/italy/nord-ovest-261020.osm.pbf",
+    "md5Url": "https://download.geofabrik.de/europe/italy/nord-ovest-261020.osm.pbf.md5",
+    "bytes": 593453668,
+    "sha256": "c8ef93378ceb67629f791b40eb2b0af5620bcb876b3132a74d5931b775ce93cb",
     "license": "Open Data Commons Open Database License 1.0 (ODbL 1.0)",
     "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
     "attribution": "(c) OpenStreetMap contributors; extract by Geofabrik GmbH",
