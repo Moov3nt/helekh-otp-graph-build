@@ -13,7 +13,7 @@ on:
       expected_gtfs_sha256:
         description: "Pin the GTFS feed to this SHA-256 (empty = accept whatever the publisher serves now; the hash is recorded either way)"
         required: false
-        default: "f0959217d549f278d59f4ef60bdb5bce8b6fc3dea2efa84c9ff7f213973ea1cc"
+        default: ""
       min_future_days:
         description: "The feed must have service at least this many days after today"
         required: true
