@@ -20,8 +20,10 @@
   },
   "osm": {
     "name": "OpenStreetMap extract, Geofabrik nord-ovest, dated 2026-11-17",
-    "url": "https://download.geofabrik.de/europe/italy/nord-ovest-261117.osm.pbf",
-    "md5Url": "https://download.geofabrik.de/europe/italy/nord-ovest-261117.osm.pbf.md5",
+    "url": "https://github.com/Moov3nt/helekh-otp-graph-build/releases/download/otp-inputs-milano-20261117/nord-ovest-261117.osm.pbf",
+    "publisherUrl": "https://download.geofabrik.de/europe/italy/nord-ovest-261117.osm.pbf",
+    "publisherMd5Url": "https://download.geofabrik.de/europe/italy/nord-ovest-261117.osm.pbf.md5",
+    "md5": "e8952c3c63ffe644f1b497a95cc6df85",
     "bytes": 595652765,
     "sha256": "823c1fdc12aca0d2d87290026c5cad9d82c06dcba1c76de0ac7e10d19e3e50b8",
     "license": "Open Data Commons Open Database License 1.0 (ODbL 1.0)",

@@ -7,7 +7,7 @@ paid service. See `NOTICE.md` for the data licences.
 ## What a run does
 1. Validates its inputs and the runner (≥ ~14.5 GB RAM, ≥ 10 GB free disk).
 2. Downloads the OTP jar from Maven Central and checks its pinned SHA-256.
-3. Downloads the OpenStreetMap extract (Geofabrik, dated, immutable) and checks size, pinned SHA-256 and the publisher's MD5.
+3. Downloads the verified release asset mirrored from the dated Geofabrik extract and checks size, pinned SHA-256 and the publisher MD5 recorded at acquisition.
 4. Downloads the GTFS feed, checks the archive, **pins it to a SHA-256** (input `expected_gtfs_sha256`) and runs the **temporal
    validity gate** (`scripts/check-gtfs-validity.mjs`): there must be service today and at least `min_future_days` after it, and
    optionally until `gtfs_must_cover_until`. An expired or too-short feed stops the run before any build.

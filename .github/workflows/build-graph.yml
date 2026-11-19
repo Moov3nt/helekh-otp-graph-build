@@ -84,13 +84,13 @@ jobs:
         run: |
           set -euo pipefail
           s="territories/$TERRITORY/sources.json"
-          url=$(jq -r .osm.url "$s"); md5url=$(jq -r .osm.md5Url "$s"); sha=$(jq -r .osm.sha256 "$s"); bytes=$(jq -r .osm.bytes "$s")
+          url=$(jq -r .osm.url "$s"); md5=$(jq -r .osm.md5 "$s"); sha=$(jq -r .osm.sha256 "$s"); bytes=$(jq -r .osm.bytes "$s")
+          [[ "$md5" =~ ^[0-9a-f]{32}$ ]] || { echo "::error::Invalid pinned OSM MD5"; exit 1; }
           curl -fsSL --retry 3 --max-time 1800 -o work/input/osm.pbf "$url"
           [[ "$(stat -c %s work/input/osm.pbf)" == "$bytes" ]] || { echo "::error::OSM size differs from the pinned size"; exit 1; }
           echo "$sha  work/input/osm.pbf" | sha256sum -c -
-          published=$(curl -fsSL --retry 3 "$md5url" | awk '{print $1}')
-          [[ "$(md5sum work/input/osm.pbf | awk '{print $1}')" == "$published" ]] || { echo "::error::OSM MD5 differs from the one Geofabrik publishes"; exit 1; }
-          echo "OSM verified against the pinned SHA-256 and the publisher's MD5"
+          [[ "$(md5sum work/input/osm.pbf | awk '{print $1}')" == "$md5" ]] || { echo "::error::OSM MD5 differs from the publisher value recorded at acquisition"; exit 1; }
+          echo "OSM verified against the pinned SHA-256 and the publisher MD5 recorded at acquisition"
 
       - name: Download the GTFS feed, verify it and check its temporal validity
         id: gtfs
