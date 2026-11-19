@@ -13,7 +13,7 @@ is subject to their licences. This notice travels with every artifact.
 ## Public-transport timetable (GTFS)
 - Source: Comune di Milano / AMAT — Agenzia Mobilità Ambiente Territorio, dataset DS929, generated from ATM scheduled service —
   https://dati.comune.milano.it/dataset/ds929-orari-del-trasporto-pubblico-locale-nel-comune-di-milano-in-formato-gtfs
-- Licence stated by the publisher: Creative Commons Attribution 3.0 Italy (CC BY 3.0 IT) — http://creativecommons.org/licenses/by/3.0/it/legalcode
+- Licence stated by the publisher: Creative Commons Attribution 4.0 International (CC BY 4.0) — https://creativecommons.org/licenses/by/4.0/
 - Attribution: Comune di Milano / AMAT. The timetable is the scheduled service only (no real-time data) and is valid only for the dates
   in `gtfs-validity-report.json`; the graph must not be relied on outside them.
 

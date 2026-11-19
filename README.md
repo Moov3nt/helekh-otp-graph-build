@@ -8,9 +8,10 @@ paid service. See `NOTICE.md` for the data licences.
 1. Validates its inputs and the runner (≥ ~14.5 GB RAM, ≥ 10 GB free disk).
 2. Downloads the OTP jar from Maven Central and checks its pinned SHA-256.
 3. Downloads the verified release asset mirrored from the dated Geofabrik extract and checks size, pinned SHA-256 and the publisher MD5 recorded at acquisition.
-4. Downloads the GTFS feed, checks the archive, **pins it to a SHA-256** (input `expected_gtfs_sha256`) and runs the **temporal
+4. Downloads the verified GTFS release asset, checks its pinned size and SHA-256, verifies the archive and runs the **temporal
    validity gate** (`scripts/check-gtfs-validity.mjs`): there must be service today and at least `min_future_days` after it, and
-   optionally until `gtfs_must_cover_until`. An expired or too-short feed stops the run before any build.
+   optionally until `gtfs_must_cover_until`. `expected_gtfs_sha256`, when set, is an additional assertion. An expired or too-short
+   feed stops the run before any build.
 5. Builds the graph inside the Temurin image pinned by digest (`versions.json`), with a heap of `heap_gb` (default 12 of 16 GB).
 6. Loads the graph and asks it for real itineraries (`scripts/otp-smoke.mjs`); the run fails if none with transit comes back.
 7. Compresses the graph (zstd), writes `manifest.json` (inputs, hashes, software, `usableUntil`) and uploads everything, with
@@ -32,8 +33,16 @@ Load it with the same OTP version (`--load`). The graph answers transit queries 
 
 ## Limits to know
 - The runner has 16 GB RAM and 14 GB of SSD (GitHub documentation for public repositories). The graph build uses a 12 GB heap.
-- The GTFS feed is mutable: a run is reproducible only with `expected_gtfs_sha256` set.
+- Each territory must reference an immutable GTFS snapshot with pinned size and SHA-256.
 - Artifact storage quotas for public repositories are not stated in GitHub's billing pages; the graph is shipped compressed and with a
   short default retention (7 days).
 - Publishing the artifact publicly distributes an ODbL-derived database: keep `NOTICE.md` with it.
 - No licence file is included yet: choose one for the pipeline code before making the repository public.
+
+## Future automation boundary
+- **Acquire:** periodically fetch only from the publisher URL and retain its catalog metadata and licence.
+- **Validate and version:** test the ZIP, calculate size and SHA-256, run the effective-calendar gate, then publish an attributed immutable input snapshot.
+- **Build conditionally:** dispatch a graph build only when a newly validated snapshot differs from the current pinned version and meets the required horizon.
+- **Distribute and monitor:** promote a validated graph with an explicit rollback, while monitoring `usableUntil`, acquisition failures and build/smoke-test failures separately.
+
+These stages are documented boundaries only; this repository does not yet schedule or deploy them automatically.

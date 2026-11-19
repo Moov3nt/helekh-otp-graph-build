@@ -11,7 +11,7 @@ on:
         required: true
         default: milano-test
       expected_gtfs_sha256:
-        description: "Pin the GTFS feed to this SHA-256 (empty = accept whatever the publisher serves now; the hash is recorded either way)"
+        description: "Optional second assertion for the GTFS SHA-256 (the territory source is always pinned and verified)"
         required: false
         default: ""
       min_future_days:
@@ -97,14 +97,16 @@ jobs:
         run: |
           set -euo pipefail
           s="territories/$TERRITORY/sources.json"
-          url=$(jq -r .gtfs.url "$s"); zone=$(jq -r .timezone "$s")
+          url=$(jq -r .gtfs.url "$s"); zone=$(jq -r .timezone "$s"); pinned_sha=$(jq -r .gtfs.sha256 "$s"); pinned_bytes=$(jq -r .gtfs.bytes "$s")
           curl -fsSL --retry 3 --max-time 600 -o work/input/gtfs.zip "$url"
           unzip -tq work/input/gtfs.zip
           sha=$(sha256sum work/input/gtfs.zip | awk '{print $1}'); bytes=$(stat -c %s work/input/gtfs.zip)
+          [[ "$bytes" == "$pinned_bytes" ]] || { echo "::error::GTFS size differs from the pinned size"; exit 1; }
+          echo "$pinned_sha  work/input/gtfs.zip" | sha256sum -c -
           echo "gtfs sha256=$sha bytes=$bytes"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"; echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
           if [[ -n "$EXPECTED_GTFS_SHA256" && "$sha" != "$EXPECTED_GTFS_SHA256" ]]; then
-            echo "::error::The publisher now serves a different feed ($sha). Re-run with expected_gtfs_sha256 empty or set to this value to accept it."
+            echo "::error::GTFS differs from expected_gtfs_sha256 ($EXPECTED_GTFS_SHA256)"
             exit 1
           fi
           unzip -oq work/input/gtfs.zip calendar.txt calendar_dates.txt trips.txt feed_info.txt -d meta/gtfs || true

@@ -20,7 +20,7 @@ const manifest = {
   workflow: { runId: need('--run-id'), commit: need('--commit') },
   software: { otpVersion: versions.otpVersion, otpJarSha256: versions.otpJarSha256, javaImage: versions.javaImage, heapGigabytes: Number(need('--heap-gb')) },
   inputs: {
-    gtfs: { name: sources.gtfs.name, url: sources.gtfs.url, sha256: need('--gtfs-sha256'), bytes: Number(need('--gtfs-bytes')), license: sources.gtfs.license, attribution: sources.gtfs.attribution },
+    gtfs: { name: sources.gtfs.name, url: sources.gtfs.url, publisherUrl: sources.gtfs.publisherUrl, catalogPage: sources.gtfs.catalogPage, version: sources.gtfs.version, sha256: need('--gtfs-sha256'), bytes: Number(need('--gtfs-bytes')), declaredValidity: { from: sources.gtfs.validFrom, until: sources.gtfs.validUntil }, license: sources.gtfs.license, licenseUrl: sources.gtfs.licenseUrl, attribution: sources.gtfs.attribution },
     osm: { name: sources.osm.name, url: sources.osm.url, publisherUrl: sources.osm.publisherUrl, publisherMd5Url: sources.osm.publisherMd5Url, md5: sources.osm.md5, sha256: need('--osm-sha256'), bytes: sources.osm.bytes, license: sources.osm.license, attribution: sources.osm.attribution },
   },
   configurationSha256: need('--config-sha256'),
