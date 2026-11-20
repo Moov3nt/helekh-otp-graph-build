@@ -1,6 +1,6 @@
 name: Build OTP graph
 
-# Manual start only. Builds an OpenTripPlanner 2.9.0 graph from public, redistributable inputs on a free GitHub-hosted runner,
+# Manual start remains available; AUTO-01D may call this same workflow only after explicit authorization. Builds an OpenTripPlanner 2.9.0 graph from public, redistributable inputs on a free GitHub-hosted runner,
 # checks every input, gates on the temporal validity of the GTFS feed, proves the graph by loading it and routing for real,
 # and uploads graph + manifest + notices as an artifact. No paid service, no secret, no code from any other repository.
 on:
@@ -30,6 +30,39 @@ on:
         description: "Artifact retention in days (1-90)"
         required: true
         default: "7"
+      expected_build_fingerprint:
+        description: "Optional orchestrator assertion; empty for ordinary manual builds"
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      territory:
+        required: true
+        type: string
+      expected_gtfs_sha256:
+        required: false
+        type: string
+        default: ""
+      min_future_days:
+        required: true
+        type: string
+        default: "1"
+      gtfs_must_cover_until:
+        required: false
+        type: string
+        default: ""
+      heap_gb:
+        required: true
+        type: string
+        default: "12"
+      retention_days:
+        required: true
+        type: string
+        default: "7"
+      expected_build_fingerprint:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -49,6 +82,7 @@ jobs:
       MUST_COVER_UNTIL: ${{ inputs.gtfs_must_cover_until }}
       HEAP_GB: ${{ inputs.heap_gb }}
       RETENTION_DAYS: ${{ inputs.retention_days }}
+      EXPECTED_BUILD_FINGERPRINT: ${{ inputs.expected_build_fingerprint }}
     steps:
       - name: Check out the pipeline
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,6 +106,18 @@ jobs:
           [[ "$disk_gb" -ge 10 ]] || { echo "::error::less than 10 GB free disk"; exit 1; }
           command -v zstd >/dev/null || sudo apt-get install -y -qq zstd
           mkdir -p work/input work/output dist meta
+
+      - name: Calculate deterministic build fingerprint
+        id: identity
+        run: |
+          set -euo pipefail
+          node scripts/graph-build-decision.mjs --mode fingerprint --territory "$TERRITORY" --heap-gb "$HEAP_GB" --out meta/build-identity.json
+          fingerprint=$(jq -er .fingerprint meta/build-identity.json)
+          if [[ -n "$EXPECTED_BUILD_FINGERPRINT" && "$fingerprint" != "$EXPECTED_BUILD_FINGERPRINT" ]]; then
+            echo "::error::evaluated fingerprint $EXPECTED_BUILD_FINGERPRINT no longer matches build fingerprint $fingerprint"
+            exit 1
+          fi
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
 
       - name: Download the OTP jar and verify it
         run: |
@@ -178,14 +224,17 @@ jobs:
             --graph-sha256 "$(cat meta/graph.sha256)" --graph-bytes "$(stat -c %s work/output/graph.obj)" \
             --compressed-sha256 "$(sha256sum dist/graph.obj.zst | awk '{print $1}')" --compressed-bytes "$(stat -c %s dist/graph.obj.zst)" \
             --validity meta/validity.json --smoke meta/smoke.json --config-sha256 "$(cat meta/config.sha256)" \
+            --build-fingerprint "${{ steps.identity.outputs.fingerprint }}" \
             --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA" --heap-gb "$HEAP_GB"
           cp NOTICE.md dist/NOTICE.md
+          cp meta/build-identity.json dist/build-identity.json
           cp meta/validity.json dist/gtfs-validity-report.json
           cp meta/smoke.json dist/routing-check.json
           ls -l dist
           {
             echo "### OTP graph built"
             echo "- territory: \`$TERRITORY\`"
+            echo "- fingerprint: \`${{ steps.identity.outputs.fingerprint }}\`"
             echo "- usable until (GTFS last service date): \`$(jq -r .usableUntil dist/manifest.json)\`"
             echo "- graph: $(jq -r .graph.bytes dist/manifest.json) bytes, compressed $(jq -r .graph.compressed.bytes dist/manifest.json) bytes"
             echo "- routing check: $(jq -r .routingCheck.verdict dist/manifest.json), $(jq -r .routingCheck.itinerariesWithTransit dist/manifest.json) itineraries with transit"
@@ -198,4 +247,17 @@ jobs:
           path: dist/
           retention-days: ${{ inputs.retention_days }}
           compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish verified fingerprint record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otp-graph-verified-${{ inputs.territory }}-${{ steps.identity.outputs.fingerprint }}
+          path: |
+            dist/manifest.json
+            dist/gtfs-validity-report.json
+            dist/routing-check.json
+            dist/NOTICE.md
+            dist/build-identity.json
+          retention-days: ${{ inputs.retention_days }}
           if-no-files-found: error

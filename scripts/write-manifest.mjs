@@ -1,7 +1,7 @@
 // Writes the manifest that travels with the graph: what it was built from, with which software, and how long the feed is valid.
 //   node write-manifest.mjs --out manifest.json --territory t --versions versions.json --sources sources.json
 //        --osm-sha256 H --gtfs-sha256 H --gtfs-bytes N --graph-sha256 H --graph-bytes N --compressed-sha256 H --compressed-bytes N
-//        --validity validity.json --smoke smoke.json --config-sha256 H --run-id ID --commit SHA --heap-gb N
+//        --validity validity.json --smoke smoke.json --config-sha256 H --build-fingerprint H --run-id ID --commit SHA --heap-gb N
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const args = new Map();
@@ -12,10 +12,16 @@ const versions = json('--versions');
 const sources = json('--sources');
 const validity = json('--validity');
 const smoke = json('--smoke');
+const buildFingerprint = need('--build-fingerprint');
+if (!/^[0-9a-f]{64}$/.test(buildFingerprint)) {
+  console.error('write-manifest: --build-fingerprint must be 64 lower-case hex digits');
+  process.exit(1);
+}
 
 const manifest = {
-  schema: 'otp-graph-manifest-v1',
+  schema: 'otp-graph-manifest-v2',
   territory: need('--territory'),
+  buildFingerprint,
   builtAtUtc: new Date().toISOString(),
   workflow: { runId: need('--run-id'), commit: need('--commit') },
   software: { otpVersion: versions.otpVersion, otpJarSha256: versions.otpJarSha256, javaImage: versions.javaImage, heapGigabytes: Number(need('--heap-gb')) },

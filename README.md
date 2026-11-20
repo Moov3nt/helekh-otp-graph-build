@@ -21,6 +21,47 @@ paid service. See `NOTICE.md` for the data licences.
 Actions → *Build OTP graph* → *Run workflow*. Only manual starts exist (`workflow_dispatch`). Job limit: 150 minutes (GitHub's
 maximum is 6 hours); the build step is capped at 100 minutes.
 
+## Conditional build evaluation (AUTO-01D)
+Actions → *Evaluate conditional OTP graph build* → *Run workflow* evaluates `main` without building when
+`authorize_build=false` (the default). Optionally set `compare_with` to an earlier ancestor commit; otherwise the first parent is used.
+The run publishes `evaluation/report.json` and writes one of these decisions to the GitHub summary:
+
+- `BUILD_REQUIRED`: a fingerprint-affecting value changed and no verified graph has that identity;
+- `ALREADY_BUILT`: an integrity-checked verification record contains the same fingerprint, a credible graph manifest and a passing
+  routing smoke test;
+- `NO_RELEVANT_CHANGE`: only unrelated/documentation files changed, or edited metadata produces the same semantic fingerprint;
+- `BLOCKED`: inputs/configuration cannot be identified consistently, or a candidate verification record is incomplete or invalid.
+
+The automatic `push` trigger is intentionally absent. A real build can only be requested manually by setting
+`authorize_build=true`; even then it runs the existing `build-graph.yml` as a reusable workflow, with the evaluated fingerprint as a
+mandatory assertion. Requests are serialized per territory for the entire evaluation/build run, so two concurrent requests cannot
+both pass the artifact check before the first authorized build finishes. There is no Release or deploy step.
+
+The fingerprint is the SHA-256 of canonical JSON containing:
+
+- territory;
+- OTP version, OTP JAR SHA-256 and byte size;
+- digest-pinned Java runtime image;
+- approved GTFS and OSM SHA-256 and byte sizes (plus the recorded OSM MD5);
+- the complete territory build config, router config and OTP config;
+- heap size;
+- a versioned OTP CLI build recipe and SHA-256 of the GTFS validity and routing smoke scripts.
+
+URLs, labels, licences, timestamps, Git commits and ordinary documentation are not graph identity. The Git commit remains provenance
+in the manifest but is deliberately not the fingerprint. If the actual OTP invocation changes, update the build-recipe constant in
+`scripts/graph-build-decision.mjs`; script content is hashed directly.
+
+Successful builds now publish the graph artifact as before and, only after build and smoke-test success, a small
+`otp-graph-verified-<territory>-<fingerprint>` record. The record contains manifest v2, full identity, input validity and routing
+results. AUTO-01D downloads that exact artifact through GitHub's digest-verifying artifact action and validates its contents; an
+artifact or Release name alone is never evidence of a ready graph. It also requires a successful `main` run of an authorized workflow
+and the associated, unexpired graph artifact from that same run. Authorized AUTO-01D builds default to 30-day retention, while the
+existing manual build retains its prior 7-day default.
+
+To enable post-merge automation later, add a narrowly filtered `push` trigger on `main` to the orchestrator and define the reviewed
+authorization policy for its build job. Keep the fingerprint assertion, per-territory concurrency, verification-record validation and
+the absence of deployment. The present implementation does not grant an automatic merge event permission to build.
+
 ## Observe-only source monitor
 Actions → *Monitor mobility sources (observe only)* → *Run workflow* checks one configured territory and source without changing the
 pinned input or starting a graph build. The same check runs daily at 04:17 UTC for `milano-test` GTFS. It writes the classification to

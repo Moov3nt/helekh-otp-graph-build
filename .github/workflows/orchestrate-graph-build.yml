@@ -1,0 +1,190 @@
+name: Evaluate conditional OTP graph build
+
+# AUTO-01D evaluation is manual only. A future push-on-main trigger must be enabled explicitly after review.
+on:
+  workflow_dispatch:
+    inputs:
+      territory:
+        description: "Territory to evaluate"
+        required: true
+        default: milano-test
+      compare_with:
+        description: "Optional earlier commit; defaults to the first parent"
+        required: false
+        default: ""
+      authorize_build:
+        description: "Explicitly authorize the existing OTP build when BUILD_REQUIRED"
+        required: true
+        type: boolean
+        default: false
+      heap_gb:
+        description: "Must match the authorized build identity"
+        required: true
+        default: "12"
+      retention_days:
+        description: "Retention for graph and verification record (1-90 days)"
+        required: true
+        default: "30"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: otp-graph-orchestrator-${{ inputs.territory }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Evaluate without building
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      decision: ${{ steps.decision.outputs.decision }}
+      fingerprint: ${{ steps.decision.outputs.fingerprint }}
+    env:
+      TERRITORY: ${{ inputs.territory }}
+      HEAP_GB: ${{ inputs.heap_gb }}
+    steps:
+      - name: Check out the evaluated revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate evaluation parameters
+        id: comparison
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::AUTO-01D evaluates main only"; exit 1; }
+          [[ "$TERRITORY" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "::error::invalid territory"; exit 1; }
+          [[ "$HEAP_GB" =~ ^[0-9]{1,2}$ && "$HEAP_GB" -ge 4 && "$HEAP_GB" -le 13 ]] || { echo "::error::heap_gb must be between 4 and 13"; exit 1; }
+          [[ "${{ inputs.retention_days }}" =~ ^[0-9]{1,2}$ && "${{ inputs.retention_days }}" -ge 1 && "${{ inputs.retention_days }}" -le 90 ]] || { echo "::error::retention_days must be between 1 and 90"; exit 1; }
+          before="${{ inputs.compare_with }}"
+          if [[ -z "$before" ]]; then before="$GITHUB_SHA^"; fi
+          git rev-parse --verify "$before^{commit}" >/dev/null || { echo "::error::comparison commit is unavailable"; exit 1; }
+          git merge-base --is-ancestor "$before" "$GITHUB_SHA" || { echo "::error::comparison commit is not an ancestor of the evaluated main revision"; exit 1; }
+          echo "before=$(git rev-parse "$before^{commit}")" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate the expected fingerprint
+        id: identity
+        run: |
+          set -euo pipefail
+          mkdir -p evaluation
+          node scripts/graph-build-decision.mjs --mode fingerprint --territory "$TERRITORY" --heap-gb "$HEAP_GB" --out evaluation/identity.json
+          fingerprint=$(jq -er .fingerprint evaluation/identity.json)
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Find an exact verified-record artifact
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINGERPRINT: ${{ steps.identity.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          name="otp-graph-verified-${TERRITORY}-${FINGERPRINT}"
+          lookup_error=""
+          if ! record=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" -f name="$name" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last // {}'); then
+            record='{}'
+            lookup_error="GitHub artifact lookup failed"
+          fi
+          echo "artifact_id=$(jq -r '.id // empty' <<< "$record")" >> "$GITHUB_OUTPUT"
+          echo "build_run_id=$(jq -r '.workflow_run.id // empty' <<< "$record")" >> "$GITHUB_OUTPUT"
+          echo "error=$lookup_error" >> "$GITHUB_OUTPUT"
+
+      - name: Download the integrity-checked verification record
+        id: download_record
+        if: steps.record.outputs.artifact_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ steps.record.outputs.artifact_id }}
+          path: evaluation/records
+
+      - name: Verify build-run provenance and graph retention
+        id: artifact_set
+        if: steps.record.outputs.artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ steps.record.outputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          error=""
+          if [[ ! "$BUILD_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            error="verification record has no build run provenance"
+          else
+            if ! run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID"); then
+              error="originating build run cannot be verified"
+            else
+              [[ "$(jq -r .conclusion <<< "$run")" == "success" ]] || error="originating build run was not successful"
+              [[ "$(jq -r .head_branch <<< "$run")" == "main" ]] || error="originating build did not run on main"
+              run_path=$(jq -r .path <<< "$run")
+              [[ "$run_path" == ".github/workflows/build-graph.yml" || "$run_path" == ".github/workflows/orchestrate-graph-build.yml" ]] || error="record did not originate from an authorized build workflow"
+              graph_name="otp-graph-${TERRITORY}-${BUILD_RUN_ID}"
+              if ! artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID/artifacts"); then
+                error="associated graph artifact cannot be verified"
+              else
+                graph_count=$(jq --arg name "$graph_name" '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<< "$artifacts")
+                [[ "$graph_count" == "1" ]] || error="the associated versioned graph artifact is absent or ambiguous"
+              fi
+            fi
+          fi
+          echo "error=$error" >> "$GITHUB_OUTPUT"
+
+      - name: Make the conditional decision
+        id: decision
+        run: |
+          if [[ -n "${{ steps.record.outputs.artifact_id }}" && "${{ steps.download_record.outcome }}" != "success" ]]; then
+            mkdir -p evaluation/records/unverifiable
+            echo '{"error":"GitHub artifact download or digest verification failed"}' > evaluation/records/unverifiable/manifest.json
+          fi
+          artifact_args=()
+          if [[ -n "${{ steps.record.outputs.error }}" ]]; then
+            artifact_args=(--artifact-set-error "${{ steps.record.outputs.error }}")
+          elif [[ -n "${{ steps.artifact_set.outputs.error }}" ]]; then
+            artifact_args=(--artifact-set-error "${{ steps.artifact_set.outputs.error }}")
+          fi
+          set +e
+          node scripts/graph-build-decision.mjs --territory "$TERRITORY" --heap-gb "$HEAP_GB" \
+            --before "${{ steps.comparison.outputs.before }}" --after "$GITHUB_SHA" \
+            --artifacts-dir evaluation/records "${artifact_args[@]}" --out evaluation/report.json
+          status=$?
+          set -e
+          decision=$(jq -er .decision evaluation/report.json)
+          fingerprint=$(jq -er .fingerprint evaluation/report.json)
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          {
+            echo "### OTP graph decision — $decision"
+            echo "- territory: \`$TERRITORY\`"
+            echo "- fingerprint: \`$fingerprint\`"
+            echo "- reason: $(jq -r .reason evaluation/report.json)"
+            echo "- relevant files: $(jq -r '.relevantChange.files | if length == 0 then "none" else map("`" + . + "`") | join(", ") end' evaluation/report.json)"
+            echo "- build explicitly authorized: \`${{ inputs.authorize_build }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$status" -eq 0 ]] || exit "$status"
+
+      - name: Retain the evaluation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otp-graph-evaluation-${{ inputs.territory }}-${{ github.run_id }}
+          path: evaluation/
+          retention-days: 30
+          if-no-files-found: error
+
+  build:
+    name: Authorized existing OTP build
+    needs: evaluate
+    if: needs.evaluate.outputs.decision == 'BUILD_REQUIRED' && inputs.authorize_build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-graph.yml
+    with:
+      territory: ${{ inputs.territory }}
+      expected_gtfs_sha256: ""
+      min_future_days: "1"
+      gtfs_must_cover_until: ""
+      heap_gb: ${{ inputs.heap_gb }}
+      retention_days: ${{ inputs.retention_days }}
+      expected_build_fingerprint: ${{ needs.evaluate.outputs.fingerprint }}
