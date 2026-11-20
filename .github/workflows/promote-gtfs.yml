@@ -93,6 +93,8 @@ jobs:
           echo "promote=false" >> "$GITHUB_OUTPUT"
           state=$(jq -r .state "$REPORT")
           change=$(jq -r .candidate.change "$REPORT")
+          current_until=$(jq -r '.gtfs.validUntil' "territories/$TERRITORY/sources.json")
+          candidate_until=$(jq -r '.validity.effective.lastServiceDate // ""' "$REPORT")
           {
             echo "### GTFS acquisition gate — $state"
             echo "- candidate change: \`$change\`"
@@ -100,12 +102,23 @@ jobs:
             echo "- ZIP integrity: \`$(jq -r .integrity.zip "$REPORT")\`"
             echo "- licence: \`$(jq -r .license.verdict "$REPORT")\`"
             echo "- effective service: \`$(jq -r '.validity.effective.firstServiceDate // "unknown"' "$REPORT")\` through \`$(jq -r '.validity.effective.lastServiceDate // "unknown"' "$REPORT")\`"
+            echo "- currently approved last service date: \`$current_until\`"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "$change" == "UNCHANGED" && ( "$state" == "UNCHANGED" || "$state" == "EXPIRING" ) ]]; then
             echo "No promotion: the official feed is unchanged."
             exit 0
           fi
           if [[ "$change" == "UPDATED" && ( "$state" == "UPDATED_VALID" || "$state" == "EXPIRING" ) ]]; then
+            if [[ ! "$current_until" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ || ! "$candidate_until" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+              echo "- result: **BLOCKED** — effective last service date is missing or invalid" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::effective last service date is missing or invalid"
+              exit 1
+            fi
+            if [[ "$candidate_until" < "$current_until" ]]; then
+              echo "- result: **BLOCKED** — temporal regression: candidate ends on \`$candidate_until\`, before current approved \`$current_until\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::GTFS temporal regression: candidate last service date $candidate_until precedes current approved $current_until"
+              exit 1
+            fi
             echo "promote=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

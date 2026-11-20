@@ -112,6 +112,32 @@ test('publishes a new valid feed and prepares a PR changing only GTFS metadata',
   assert.deepEqual(updated.osm, sources.osm);
 });
 
+test('blocks a candidate whose effective coverage regresses', async () => {
+  const api = mockApi();
+  const report = candidateReport({
+    state: 'EXPIRING',
+    validity: { effective: { lastServiceDate: '2026-11-29' } },
+    expiry: { lastServiceDate: '2026-11-29', daysRemaining: 9, warningLevelDays: 14 },
+  });
+  await assert.rejects(scenario(report, api), /GTFS_TEMPORAL_REGRESSION.*2026-11-29.*2026-11-30/);
+  assert.deepEqual(api.calls, []);
+});
+
+test('accepts a valid changed feed with the same effective final date', async () => {
+  const report = candidateReport({
+    state: 'EXPIRING',
+    validity: { effective: { lastServiceDate: '2026-11-30' } },
+    expiry: { lastServiceDate: '2026-11-30', daysRemaining: 10, warningLevelDays: 14 },
+  });
+  const { result } = await scenario(report);
+  assert.equal(result.action, 'CREATED_ASSET_AND_PR');
+});
+
+test('accepts a valid changed feed with extended effective coverage', async () => {
+  const { result } = await scenario(candidateReport());
+  assert.equal(result.action, 'CREATED_ASSET_AND_PR');
+});
+
 for (const [name, overrides, error] of [
   ['blocks an expired feed', { state: 'EXPIRED', expiry: { daysRemaining: -1 }, validity: { verdict: 'FAIL' } }, 'GTFS_EXPIRED'],
   ['blocks a corrupt ZIP', { state: 'UPDATED_INVALID', integrity: { zip: 'FAIL' } }, 'ZIP_INVALID'],

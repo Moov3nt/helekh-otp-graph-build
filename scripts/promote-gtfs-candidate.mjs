@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 const shaPattern = /^[0-9a-f]{64}$/;
 const commitPattern = /^[0-9a-f]{40}$/;
 const identityPattern = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
 const wait = (milliseconds) => new Promise((accept) => setTimeout(accept, milliseconds));
 
 const fileSha256 = (path) => new Promise((accept, reject) => {
@@ -33,6 +34,12 @@ function requireCandidate(report, sources, actual) {
   if (report.validity?.verdict !== 'PASS') throw new Error('GTFS_INVALID');
   if (!shaPattern.test(report.candidate?.sha256 ?? '')) throw new Error('candidate SHA-256 is invalid');
   if (actual.sha256 !== report.candidate.sha256 || actual.bytes !== report.candidate.bytes) throw new Error('candidate file differs from its fresh validation report');
+  const currentLastServiceDate = sources.gtfs.validUntil;
+  const candidateLastServiceDate = report.validity?.effective?.lastServiceDate;
+  if (!dayPattern.test(currentLastServiceDate ?? '') || !dayPattern.test(candidateLastServiceDate ?? '')) throw new Error('effective last service date is missing or invalid');
+  if (candidateLastServiceDate < currentLastServiceDate) {
+    throw new Error(`GTFS_TEMPORAL_REGRESSION: candidate last service date ${candidateLastServiceDate} precedes current approved ${currentLastServiceDate}`);
+  }
   if (sources.gtfs.sha256 === actual.sha256 || report.candidate.change === 'UNCHANGED') return 'UNCHANGED';
   if (!['UPDATED_VALID', 'EXPIRING'].includes(report.state) || report.candidate.change !== 'UPDATED') throw new Error(`candidate is not promotable from state ${report.state}`);
   return 'UPDATED';
