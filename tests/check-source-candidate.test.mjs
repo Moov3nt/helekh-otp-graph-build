@@ -77,7 +77,11 @@ function baseMonitor() {
     gtfs: {
       enabled: true, minimumFutureDays: 1, expiryWarningDays: [21, 14, 7],
       approvedLicenses: [{ id: 'CC-BY-4.0', name: 'Creative Commons Attribution 4.0 International (CC BY 4.0)', url: 'https://creativecommons.org/licenses/by/4.0/' }],
-      download: { maximumAttempts: 3, connectTimeoutSeconds: 20, maximumTimeSeconds: 180, retryDelaySeconds: 5 },
+      download: {
+        maximumAttemptsPerUrl: 2, connectTimeoutSeconds: 8, attemptTimeoutSeconds: 45, retryDelaySeconds: 2,
+        totalBudgetSeconds: 145, maximumBytes: 60_000_000, maximumRedirects: 2,
+        allowedHosts: ['example.test'], urls: [{ id: 'primary', url: 'https://example.test/gtfs.zip', enabled: true }],
+      },
     },
   };
 }

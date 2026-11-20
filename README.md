@@ -31,6 +31,18 @@ territory opts in with a `monitor.json` beside its `sources.json`; only `milano-
 finds a changed, technically valid, non-expired and licence-approved feed, it also retains ZIP, report and origin metadata for three
 days as `gtfs-monitor-candidate-<territory>-<source>-<run-id>-<sha256>`. Unchanged or rejected ZIPs are never duplicated.
 
+ATM acquisition uses an explicit HTTPS allowlist and a bounded policy: 8 seconds to connect, 45 seconds maximum per attempt, at most
+two attempts per enabled URL with a 2-second delay, a 145-second total budget, at most two redirects and a 60,000,000-byte body limit.
+HTTP 4xx, HTTP 5xx, connection/transfer timeouts, incomplete bodies, size violations and unauthorized redirects are reported
+separately. Redirects are followed only when the destination remains HTTPS on an allowlisted host. The 60 MB ceiling leaves more than
+twice the headroom required by the verified 25,482,440-byte ATM snapshot; a 45-second transfer window corresponds to roughly 4.5
+Mbit/s for that snapshot.
+
+The enabled primary is the official Comune di Milano shortcut `https://dati.comune.milano.it/gtfs.zip`. The catalog resource URL is
+recorded in `monitor.json` but remains disabled: on 2026-11-20 both official paths resolved to the same host/IP and timed out without a
+response, so neither content identity nor operational independence could be established. It is therefore not yet a qualified fallback.
+The source report retains the stable publisher provenance plus the configured/final URL and the outcome of every acquisition attempt.
+
 ## Controlled GTFS promotion
 Actions → *Promote verified GTFS input* → *Run workflow* performs a new download from the configured official publisher URL; it does
 not trust a previous monitor report. The read-only job repeats SHA-256, ZIP, effective-calendar, trip and approved-licence checks. An
@@ -39,7 +51,8 @@ Release assets whose names and tag include the full content SHA-256, and propose
 GTFS metadata. The adjacent input manifest records provenance, size, hash, licence, version and effective validity. The workflow has no
 schedule and AUTO-01B never invokes it automatically; no graph build or deployment is part of promotion.
 
-Promotion has two explicit acquisition modes. `direct` keeps the original publisher download. `monitor_artifact` requires the exact
+Promotion has two explicit acquisition modes. `direct` applies the same bounded, allowlisted acquisition policy as the monitor.
+`monitor_artifact` requires the exact
 AUTO-01B run ID, resolves only the candidate artifact produced by `.github/workflows/monitor-sources.yml` in this repository, verifies
 its GitHub digest, origin manifest, territory, source, run, ZIP hash and size, then repeats the full GTFS and temporal-regression gates.
 An absent, expired or discordant artifact fails without falling back to another artifact or to the publisher. Consequently, a retained

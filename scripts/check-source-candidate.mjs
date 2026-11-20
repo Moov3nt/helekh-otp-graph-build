@@ -26,6 +26,9 @@ const outputPath = resolve(need('--out'));
 const today = args.get('--today') ?? new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const checkedAtUtc = args.get('--checked-at') ?? new Date().toISOString();
 const downloadError = args.get('--download-error') ?? null;
+const acquiredFromUrl = args.get('--acquired-from-url') ?? null;
+const downloadReportPath = args.get('--download-report');
+const downloadTransport = downloadReportPath === undefined ? null : loadJson(resolve(downloadReportPath));
 
 if (!['available', 'unavailable'].includes(downloadStatus)) throw new Error('--download-status must be available or unavailable');
 if (!dayPattern.test(today)) throw new Error('--today must be YYYY-MM-DD');
@@ -195,6 +198,8 @@ const report = {
   acquisition: {
     status: downloadStatus === 'available' ? 'AVAILABLE' : 'UNAVAILABLE',
     publisherUrl: source.publisherUrl ?? null,
+    selectedUrl: acquiredFromUrl,
+    transport: downloadTransport,
     error: downloadStatus === 'unavailable' ? downloadError : null,
   },
   current: { sha256: source.sha256, bytes: source.bytes, validUntil: source.validUntil ?? null },

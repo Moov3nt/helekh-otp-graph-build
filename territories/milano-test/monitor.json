@@ -13,10 +13,28 @@
       }
     ],
     "download": {
-      "maximumAttempts": 3,
-      "connectTimeoutSeconds": 20,
-      "maximumTimeSeconds": 180,
-      "retryDelaySeconds": 5
+      "maximumAttemptsPerUrl": 2,
+      "connectTimeoutSeconds": 8,
+      "attemptTimeoutSeconds": 45,
+      "retryDelaySeconds": 2,
+      "totalBudgetSeconds": 145,
+      "maximumBytes": 60000000,
+      "maximumRedirects": 2,
+      "allowedHosts": ["dati.comune.milano.it"],
+      "urls": [
+        {
+          "id": "primary",
+          "url": "https://dati.comune.milano.it/gtfs.zip",
+          "enabled": true,
+          "qualification": "Official Comune di Milano distribution shortcut; primary acquisition path."
+        },
+        {
+          "id": "catalog-resource",
+          "url": "https://dati.comune.milano.it/dataset/ae3f3db9-de61-45b7-94e7-9395c0e3ef53/resource/6251f156-4c74-4a0b-904e-01bcb701a686/download/gtfs.zip",
+          "enabled": false,
+          "qualification": "Official catalog resource but not an independent fallback: both paths resolved to the same host/IP and timed out without a response on 2026-11-20; content identity could not be verified."
+        }
+      ]
     }
   }
 }

@@ -50,13 +50,7 @@ jobs:
           [[ -f "$sources" && -f "$monitor" ]] || { echo "::error::territory has no sources.json and monitor.json"; exit 1; }
           jq -e --arg territory "$TERRITORY" '.territory == $territory and .gtfs.publisherUrl != null and .gtfs.sha256 != null' "$sources" >/dev/null
           jq -e --arg territory "$TERRITORY" '.schema == "source-monitor-v1" and .territory == $territory and .gtfs.enabled == true' "$monitor" >/dev/null
-          attempts=$(jq -r '.gtfs.download.maximumAttempts' "$monitor")
-          connect_timeout=$(jq -r '.gtfs.download.connectTimeoutSeconds' "$monitor")
-          maximum_time=$(jq -r '.gtfs.download.maximumTimeSeconds' "$monitor")
-          retry_delay=$(jq -r '.gtfs.download.retryDelaySeconds' "$monitor")
-          [[ "$attempts" =~ ^[1-3]$ && "$connect_timeout" =~ ^[0-9]+$ && "$maximum_time" =~ ^[0-9]+$ && "$retry_delay" =~ ^[0-9]+$ ]] || {
-            echo "::error::invalid bounded download policy"; exit 1;
-          }
+          node scripts/download-gtfs-candidate.mjs --monitor "$monitor" --source "$SOURCE" --validate-only true
           mkdir -p work/monitor meta
 
       - name: Download once and classify the GTFS candidate
@@ -64,25 +58,26 @@ jobs:
           set -euo pipefail
           sources="territories/$TERRITORY/sources.json"
           monitor="territories/$TERRITORY/monitor.json"
-          url=$(jq -er '.gtfs.publisherUrl | select(startswith("https://"))' "$sources")
-          attempts=$(jq -r '.gtfs.download.maximumAttempts' "$monitor")
-          retries=$((attempts - 1))
-          connect_timeout=$(jq -r '.gtfs.download.connectTimeoutSeconds' "$monitor")
-          maximum_time=$(jq -r '.gtfs.download.maximumTimeSeconds' "$monitor")
-          retry_delay=$(jq -r '.gtfs.download.retryDelaySeconds' "$monitor")
           set +e
-          curl -fsSL --retry "$retries" --retry-all-errors --retry-delay "$retry_delay" \
-            --connect-timeout "$connect_timeout" --max-time "$maximum_time" \
-            -o work/monitor/gtfs-candidate.zip "$url"
+          node scripts/download-gtfs-candidate.mjs --monitor "$monitor" --source "$SOURCE" \
+            --out work/monitor/gtfs-candidate.zip --report meta/source-download-report.json
           download_status=$?
           set -e
           if [[ "$download_status" -eq 0 ]]; then
+            selected_url=$(jq -er '.selected.finalUrl' meta/source-download-report.json)
             node scripts/check-source-candidate.mjs --sources "$sources" --monitor "$monitor" --source "$SOURCE" \
-              --download-status available --candidate work/monitor/gtfs-candidate.zip --out "$REPORT"
-          else
+              --download-status available --candidate work/monitor/gtfs-candidate.zip \
+              --acquired-from-url "$selected_url" --download-report meta/source-download-report.json --out "$REPORT"
+          elif [[ "$download_status" -eq 2 ]]; then
+            failure=$(jq -er '.failure' meta/source-download-report.json)
             rm -f work/monitor/gtfs-candidate.zip
             node scripts/check-source-candidate.mjs --sources "$sources" --monitor "$monitor" --source "$SOURCE" \
-              --download-status unavailable --download-error "curl-exit-$download_status" --out "$REPORT"
+              --download-status unavailable --download-error "$failure" \
+              --download-report meta/source-download-report.json --out "$REPORT"
+          else
+            rm -f work/monitor/gtfs-candidate.zip
+            echo "::error::GTFS downloader configuration or execution failed"
+            exit "$download_status"
           fi
 
       - name: Package only a new verified candidate
@@ -119,6 +114,8 @@ jobs:
             echo "- territory: \`$(jq -r .territory "$REPORT")\`"
             echo "- source: \`$(jq -r .source "$REPORT")\`"
             echo "- acquisition: \`$(jq -r .acquisition.status "$REPORT")\`"
+            echo "- selected URL: \`$(jq -r '.acquisition.selectedUrl // "not available"' "$REPORT")\`"
+            echo "- download result: \`$(jq -r '.acquisition.transport.failure // "SUCCESS"' "$REPORT")\`"
             echo "- current SHA-256: \`$(jq -r .current.sha256 "$REPORT")\`"
             echo "- candidate SHA-256: \`$(jq -r '.candidate.sha256 // "not available"' "$REPORT")\`"
             echo "- ZIP integrity: \`$(jq -r .integrity.zip "$REPORT")\`"
