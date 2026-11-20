@@ -85,6 +85,29 @@ jobs:
               --download-status unavailable --download-error "curl-exit-$download_status" --out "$REPORT"
           fi
 
+      - name: Package only a new verified candidate
+        id: candidate
+        run: |
+          set -euo pipefail
+          node scripts/monitor-candidate-artifact.mjs --operation package \
+            --report "$REPORT" --candidate work/monitor/gtfs-candidate.zip --directory work/monitor/promotion-candidate \
+            --repository "$GITHUB_REPOSITORY" --workflow .github/workflows/monitor-sources.yml \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --head-sha "$GITHUB_SHA" --territory "$TERRITORY" --source "$SOURCE" \
+            --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --out meta/candidate-retention.json
+          echo "available=$(jq -r .available meta/candidate-retention.json)" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$(jq -r '.artifactName // ""' meta/candidate-retention.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the new verified candidate for manual promotion
+        id: preserve
+        if: steps.candidate.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.candidate.outputs.artifact_name }}
+          path: work/monitor/promotion-candidate/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
       - name: Write the readable summary
         if: always()
         run: |
@@ -103,7 +126,19 @@ jobs:
             echo "- effective last service date: \`$(jq -r '.expiry.lastServiceDate // "unknown"' "$REPORT")\`"
             echo "- days remaining: \`$(jq -r '.expiry.daysRemaining // "unknown"' "$REPORT")\`"
             echo "- observe-only: no input mutation, release, build or deployment"
+            if [[ -f meta/candidate-retention.json && "$(jq -r .available meta/candidate-retention.json)" == "true" ]]; then
+              if [[ "${{ steps.preserve.outcome }}" == "success" ]]; then
+                echo "- promotion candidate: **AVAILABLE** as \`$(jq -r .artifactName meta/candidate-retention.json)\` for 3 days"
+              else
+                echo "- promotion candidate: **NOT AVAILABLE** — temporary artifact upload failed"
+              fi
+            else
+              echo "- promotion candidate: not retained ($(jq -r '.reason // "packaging failed"' meta/candidate-retention.json 2>/dev/null || echo "packaging failed"))"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f meta/candidate-retention.json && "$(jq -r .available meta/candidate-retention.json)" == "true" && "${{ steps.preserve.outcome }}" != "success" ]]; then
+            echo "::error::the verified candidate could not be retained and is not available for promotion"
+          fi
           case "$state" in
             EXPIRING) echo "::warning::GTFS is approaching its effective last service date" ;;
             UNAVAILABLE|UPDATED_INVALID|LICENSE_UNKNOWN|EXPIRED) echo "::error::source monitor state is $state" ;;
