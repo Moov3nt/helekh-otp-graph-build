@@ -158,7 +158,9 @@ stateTest('blocks a licence outside the approved policy', 'LICENSE_UNKNOWN', {
   sourceOverrides: { license: 'Unknown licence', licenseUrl: 'https://example.test/unknown' },
 }, (report) => {
   assert.equal(report.license.verdict, 'UNKNOWN');
-  assert.equal(report.integrity.zip, 'NOT_RUN');
+  assert.equal(report.integrity.zip, 'PASS');
+  assert.equal(report.validity.verdict, 'PASS');
+  assert.ok(report.problems.includes('LICENSE_NOT_APPROVED'));
 });
 
 stateTest('reports a temporarily unavailable source without changing the valid input', 'UNAVAILABLE', { unavailable: true }, (report) => {

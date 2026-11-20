@@ -130,16 +130,16 @@ if (downloadStatus === 'unavailable') {
   };
   candidate.change = candidate.sha256 === source.sha256 ? 'UNCHANGED' : 'UPDATED';
 
+  const checked = runGtfsValidation(candidatePath);
+  integrity = checked.integrity;
+  validity = checked.validity;
+  problems.push(...checked.problems);
+  const lastServiceDate = validity?.effective?.lastServiceDate ?? null;
+  const expiryStatus = expiry(lastServiceDate);
   if (license.verdict !== 'APPROVED') {
     state = 'LICENSE_UNKNOWN';
     problems.push('LICENSE_NOT_APPROVED');
   } else {
-    const checked = runGtfsValidation(candidatePath);
-    integrity = checked.integrity;
-    validity = checked.validity;
-    problems.push(...checked.problems);
-    const lastServiceDate = validity?.effective?.lastServiceDate ?? null;
-    const expiryStatus = expiry(lastServiceDate);
     if (integrity !== 'PASS' || validity?.verdict !== 'PASS') {
       state = lastServiceDate !== null && lastServiceDate < today ? 'EXPIRED' : 'UPDATED_INVALID';
     } else if (expiryStatus.daysRemaining < 0) {
