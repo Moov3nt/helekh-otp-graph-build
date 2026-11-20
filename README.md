@@ -21,6 +21,12 @@ paid service. See `NOTICE.md` for the data licences.
 Actions → *Build OTP graph* → *Run workflow*. Only manual starts exist (`workflow_dispatch`). Job limit: 150 minutes (GitHub's
 maximum is 6 hours); the build step is capped at 100 minutes.
 
+## Observe-only source monitor
+Actions → *Monitor mobility sources (observe only)* → *Run workflow* checks one configured territory and source without changing the
+pinned input or starting a graph build. AUTO-01A has no schedule, release, pull-request or deployment permission. It writes the
+classification to the job summary and uploads `source-candidate-report.json` for three days. A territory opts in with a `monitor.json`
+beside its `sources.json`; only `milano-test` GTFS is configured initially.
+
 ## Territories
 A territory is a folder `territories/<name>/` with `build-config.json` and `sources.json`. `milano-test` is a **test territory**; the
 pipeline itself assumes nothing about it.

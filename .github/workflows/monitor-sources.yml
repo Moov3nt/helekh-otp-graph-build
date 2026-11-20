@@ -1,0 +1,126 @@
+name: Monitor mobility sources (observe only)
+
+# AUTO-01A: manual observation only. This workflow cannot edit sources, create releases/PRs, build graphs or deploy.
+on:
+  workflow_dispatch:
+    inputs:
+      territory:
+        description: "Folder under territories/ containing sources.json and monitor.json"
+        required: true
+        default: milano-test
+      source:
+        description: "Source type to observe"
+        required: true
+        type: choice
+        options:
+          - gtfs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitor-source-${{ inputs.territory }}-${{ inputs.source }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TERRITORY: ${{ inputs.territory }}
+      SOURCE: ${{ inputs.source }}
+      REPORT: meta/source-candidate-report.json
+    steps:
+      - name: Check out the pipeline without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate monitor configuration
+        run: |
+          set -euo pipefail
+          [[ "$TERRITORY" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "::error::invalid territory"; exit 1; }
+          [[ "$SOURCE" == "gtfs" ]] || { echo "::error::AUTO-01A supports gtfs only"; exit 1; }
+          sources="territories/$TERRITORY/sources.json"
+          monitor="territories/$TERRITORY/monitor.json"
+          [[ -f "$sources" && -f "$monitor" ]] || { echo "::error::territory has no sources.json and monitor.json"; exit 1; }
+          jq -e --arg territory "$TERRITORY" '.territory == $territory and .gtfs.publisherUrl != null and .gtfs.sha256 != null' "$sources" >/dev/null
+          jq -e --arg territory "$TERRITORY" '.schema == "source-monitor-v1" and .territory == $territory and .gtfs.enabled == true' "$monitor" >/dev/null
+          attempts=$(jq -r '.gtfs.download.maximumAttempts' "$monitor")
+          connect_timeout=$(jq -r '.gtfs.download.connectTimeoutSeconds' "$monitor")
+          maximum_time=$(jq -r '.gtfs.download.maximumTimeSeconds' "$monitor")
+          retry_delay=$(jq -r '.gtfs.download.retryDelaySeconds' "$monitor")
+          [[ "$attempts" =~ ^[1-3]$ && "$connect_timeout" =~ ^[0-9]+$ && "$maximum_time" =~ ^[0-9]+$ && "$retry_delay" =~ ^[0-9]+$ ]] || {
+            echo "::error::invalid bounded download policy"; exit 1;
+          }
+          mkdir -p work/monitor meta
+
+      - name: Download once and classify the GTFS candidate
+        run: |
+          set -euo pipefail
+          sources="territories/$TERRITORY/sources.json"
+          monitor="territories/$TERRITORY/monitor.json"
+          url=$(jq -er '.gtfs.publisherUrl | select(startswith("https://"))' "$sources")
+          attempts=$(jq -r '.gtfs.download.maximumAttempts' "$monitor")
+          retries=$((attempts - 1))
+          connect_timeout=$(jq -r '.gtfs.download.connectTimeoutSeconds' "$monitor")
+          maximum_time=$(jq -r '.gtfs.download.maximumTimeSeconds' "$monitor")
+          retry_delay=$(jq -r '.gtfs.download.retryDelaySeconds' "$monitor")
+          set +e
+          curl -fsSL --retry "$retries" --retry-all-errors --retry-delay "$retry_delay" \
+            --connect-timeout "$connect_timeout" --max-time "$maximum_time" \
+            -o work/monitor/gtfs-candidate.zip "$url"
+          download_status=$?
+          set -e
+          if [[ "$download_status" -eq 0 ]]; then
+            node scripts/check-source-candidate.mjs --sources "$sources" --monitor "$monitor" --source "$SOURCE" \
+              --download-status available --candidate work/monitor/gtfs-candidate.zip --out "$REPORT"
+          else
+            rm -f work/monitor/gtfs-candidate.zip
+            node scripts/check-source-candidate.mjs --sources "$sources" --monitor "$monitor" --source "$SOURCE" \
+              --download-status unavailable --download-error "curl-exit-$download_status" --out "$REPORT"
+          fi
+
+      - name: Write the readable summary
+        if: always()
+        run: |
+          set -euo pipefail
+          [[ -f "$REPORT" ]] || { echo "::error::the monitor produced no report"; exit 1; }
+          state=$(jq -r .state "$REPORT")
+          {
+            echo "### Mobility source monitor — $state"
+            echo "- territory: \`$(jq -r .territory "$REPORT")\`"
+            echo "- source: \`$(jq -r .source "$REPORT")\`"
+            echo "- acquisition: \`$(jq -r .acquisition.status "$REPORT")\`"
+            echo "- current SHA-256: \`$(jq -r .current.sha256 "$REPORT")\`"
+            echo "- candidate SHA-256: \`$(jq -r '.candidate.sha256 // "not available"' "$REPORT")\`"
+            echo "- ZIP integrity: \`$(jq -r .integrity.zip "$REPORT")\`"
+            echo "- licence: \`$(jq -r .license.verdict "$REPORT")\`"
+            echo "- effective last service date: \`$(jq -r '.expiry.lastServiceDate // "unknown"' "$REPORT")\`"
+            echo "- days remaining: \`$(jq -r '.expiry.daysRemaining // "unknown"' "$REPORT")\`"
+            echo "- observe-only: no input mutation, release, build or deployment"
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$state" in
+            EXPIRING) echo "::warning::GTFS is approaching its effective last service date" ;;
+            UNAVAILABLE|UPDATED_INVALID|LICENSE_UNKNOWN|EXPIRED) echo "::error::source monitor state is $state" ;;
+          esac
+
+      - name: Upload the JSON report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-monitor-${{ inputs.territory }}-${{ inputs.source }}-${{ github.run_id }}
+          path: meta/source-candidate-report.json
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Fail only for blocking observations
+        if: always()
+        run: |
+          set -euo pipefail
+          state=$(jq -r .state "$REPORT")
+          case "$state" in
+            UNAVAILABLE|UPDATED_INVALID|LICENSE_UNKNOWN|EXPIRED) exit 1 ;;
+            UNCHANGED|UPDATED_VALID|EXPIRING) exit 0 ;;
+            *) echo "::error::unknown monitor state: $state"; exit 1 ;;
+          esac

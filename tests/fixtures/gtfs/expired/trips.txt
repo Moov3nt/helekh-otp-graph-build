@@ -1,0 +1,2 @@
+route_id,service_id,trip_id
+route-expired,service-expired,trip-expired
