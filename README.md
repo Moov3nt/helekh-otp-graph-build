@@ -23,9 +23,11 @@ maximum is 6 hours); the build step is capped at 100 minutes.
 
 ## Observe-only source monitor
 Actions → *Monitor mobility sources (observe only)* → *Run workflow* checks one configured territory and source without changing the
-pinned input or starting a graph build. AUTO-01A has no schedule, release, pull-request or deployment permission. It writes the
-classification to the job summary and uploads `source-candidate-report.json` for three days. A territory opts in with a `monitor.json`
-beside its `sources.json`; only `milano-test` GTFS is configured initially.
+pinned input or starting a graph build. The same check runs daily at 04:17 UTC for `milano-test` GTFS. It writes the classification to
+the job summary, uploads `source-candidate-report.json` for three days and maintains one persistent GitHub issue per territory/source
+only while attention is required. Daily timestamps do not trigger issue updates. The observation job has read-only repository access;
+only the separate notification job receives `issues: write`. There is no release, pull-request, build or deployment permission. A
+territory opts in with a `monitor.json` beside its `sources.json`; only `milano-test` GTFS is configured initially.
 
 ## Territories
 A territory is a folder `territories/<name>/` with `build-config.json` and `sources.json`. `milano-test` is a **test territory**; the

@@ -1,7 +1,9 @@
 name: Monitor mobility sources (observe only)
 
-# AUTO-01A: manual observation only. This workflow cannot edit sources, create releases/PRs, build graphs or deploy.
+# AUTO-01B: observation plus one persistent GitHub issue. It cannot edit inputs, create releases/PRs, build graphs or deploy.
 on:
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       territory:
@@ -19,16 +21,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: monitor-source-${{ inputs.territory }}-${{ inputs.source }}
+  group: monitor-source-${{ inputs.territory || 'milano-test' }}-${{ inputs.source || 'gtfs' }}
   cancel-in-progress: false
 
 jobs:
   observe:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     env:
-      TERRITORY: ${{ inputs.territory }}
-      SOURCE: ${{ inputs.source }}
+      TERRITORY: ${{ inputs.territory || 'milano-test' }}
+      SOURCE: ${{ inputs.source || 'gtfs' }}
       REPORT: meta/source-candidate-report.json
     steps:
       - name: Check out the pipeline without credentials
@@ -109,7 +113,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: source-monitor-${{ inputs.territory }}-${{ inputs.source }}-${{ github.run_id }}
+          name: source-monitor-${{ github.run_id }}
           path: meta/source-candidate-report.json
           retention-days: 3
           if-no-files-found: error
@@ -124,3 +128,47 @@ jobs:
             UNCHANGED|UPDATED_VALID|EXPIRING) exit 0 ;;
             *) echo "::error::unknown monitor state: $state"; exit 1 ;;
           esac
+
+  notify:
+    name: Synchronize persistent source issue
+    if: ${{ always() }}
+    needs: observe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the notification code without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the immutable monitor report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: source-monitor-${{ github.run_id }}
+          path: meta
+
+      - name: Synchronize the persistent issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/sync-monitor-issue.mjs --report meta/source-candidate-report.json --out meta/issue-sync-result.json
+
+      - name: Record notification outcome
+        if: always()
+        run: |
+          if [[ -f meta/issue-sync-result.json ]]; then
+            action=$(jq -r .action meta/issue-sync-result.json)
+            issue=$(jq -r '.issueNumber // "none"' meta/issue-sync-result.json)
+            duplicates=$(jq -r .duplicatesClosed meta/issue-sync-result.json)
+            {
+              echo "### Persistent issue synchronization — $action"
+              echo "- issue: \`$issue\`"
+              echo "- duplicate issues closed: \`$duplicates\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Persistent issue synchronization — FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::GitHub issue synchronization failed; the monitor report remains available as a workflow artifact"
+          fi
