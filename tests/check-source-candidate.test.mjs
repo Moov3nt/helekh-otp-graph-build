@@ -137,6 +137,7 @@ stateTest('classifies an unchanged valid feed', 'UNCHANGED', { current: 'same' }
 stateTest('classifies a new valid feed', 'UPDATED_VALID', { current: 'different' }, (report) => {
   assert.equal(report.candidate.change, 'UPDATED');
   assert.equal(report.license.verdict, 'APPROVED');
+  assert.equal(report.feedInfo.version, 'valid');
 });
 
 stateTest('rejects a corrupt ZIP', 'UPDATED_INVALID', { corrupted: true }, (report) => {

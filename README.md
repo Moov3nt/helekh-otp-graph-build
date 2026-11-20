@@ -29,6 +29,14 @@ only while attention is required. Daily timestamps do not trigger issue updates.
 only the separate notification job receives `issues: write`. There is no release, pull-request, build or deployment permission. A
 territory opts in with a `monitor.json` beside its `sources.json`; only `milano-test` GTFS is configured initially.
 
+## Controlled GTFS promotion
+Actions → *Promote verified GTFS input* → *Run workflow* performs a new download from the configured official publisher URL; it does
+not trust a previous monitor report. The read-only job repeats SHA-256, ZIP, effective-calendar, trip and approved-licence checks. An
+unchanged or invalid feed stops there. A valid changed feed is reverified by a separate write-scoped job, published as deterministic
+Release assets whose names and tag include the full content SHA-256, and proposed through an unmerged PR changing only the territory's
+GTFS metadata. The adjacent input manifest records provenance, size, hash, licence, version and effective validity. The workflow has no
+schedule and AUTO-01B never invokes it automatically; no graph build or deployment is part of promotion.
+
 ## Territories
 A territory is a folder `territories/<name>/` with `build-config.json` and `sources.json`. `milano-test` is a **test territory**; the
 pipeline itself assumes nothing about it.

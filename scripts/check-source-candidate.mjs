@@ -79,6 +79,29 @@ function findUnzip() {
   throw new Error('unzip is required but was not found');
 }
 
+function firstCsvRecord(path) {
+  if (!existsSync(path)) return null;
+  const lines = readFileSync(path, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return null;
+  const cells = (line) => {
+    const values = [];
+    let value = '';
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (quoted && character === '"' && line[index + 1] === '"') { value += '"'; index += 1; }
+      else if (character === '"') quoted = !quoted;
+      else if (character === ',' && !quoted) { values.push(value); value = ''; }
+      else value += character;
+    }
+    values.push(value);
+    return values;
+  };
+  const headers = cells(lines[0]);
+  const values = cells(lines[1]);
+  return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? '']));
+}
+
 function runGtfsValidation(candidateZip) {
   const unzip = findUnzip();
   const integrity = spawnSync(unzip, ['-tq', candidateZip], { encoding: 'utf8', windowsHide: true });
@@ -104,8 +127,14 @@ function runGtfsValidation(candidateZip) {
     if (mustCoverUntil !== '') validatorArgs.push('--must-cover-until', mustCoverUntil);
     const validation = spawnSync(process.execPath, validatorArgs, { encoding: 'utf8', windowsHide: true });
     const validity = existsSync(validityPath) ? loadJson(validityPath) : null;
-    if (validation.status !== 0) return { integrity: 'PASS', validity, problems: validity?.problems?.length ? validity.problems : ['GTFS_VALIDATOR_FAILED'] };
-    return { integrity: 'PASS', validity, problems: [] };
+    const rawFeedInfo = firstCsvRecord(join(work, 'feed_info.txt'));
+    const feedInfo = rawFeedInfo === null ? null : {
+      version: rawFeedInfo.feed_version || null,
+      declaredStartDate: rawFeedInfo.feed_start_date || null,
+      declaredEndDate: rawFeedInfo.feed_end_date || null,
+    };
+    if (validation.status !== 0) return { integrity: 'PASS', validity, feedInfo, problems: validity?.problems?.length ? validity.problems : ['GTFS_VALIDATOR_FAILED'] };
+    return { integrity: 'PASS', validity, feedInfo, problems: [] };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -114,6 +143,7 @@ function runGtfsValidation(candidateZip) {
 let candidate = { sha256: null, bytes: null, change: 'UNKNOWN' };
 let integrity = 'NOT_RUN';
 let validity = null;
+let feedInfo = null;
 let problems = [];
 let state;
 
@@ -133,6 +163,7 @@ if (downloadStatus === 'unavailable') {
   const checked = runGtfsValidation(candidatePath);
   integrity = checked.integrity;
   validity = checked.validity;
+  feedInfo = checked.feedInfo ?? null;
   problems.push(...checked.problems);
   const lastServiceDate = validity?.effective?.lastServiceDate ?? null;
   const expiryStatus = expiry(lastServiceDate);
@@ -171,6 +202,7 @@ const report = {
   integrity: { zip: integrity },
   license,
   validity,
+  feedInfo,
   expiry: { lastServiceDate, ...expiry(lastServiceDate) },
   problems: [...new Set(problems)],
   observeOnly: { inputMutation: false, releaseCreated: false, buildRequested: false, deploymentRequested: false },
