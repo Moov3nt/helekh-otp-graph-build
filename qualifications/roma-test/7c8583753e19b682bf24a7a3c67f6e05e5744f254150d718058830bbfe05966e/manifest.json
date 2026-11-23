@@ -1,0 +1,102 @@
+{
+  "schema": "otp-graph-post-qualification-v1",
+  "territory": "roma-test",
+  "qualification": {
+    "status": "ROUTING_QUALIFIED",
+    "qualifiedAtUtc": "2026-11-23T10:36:05Z",
+    "qualificationCommit": "4d83b9f6af83b4ab2310899675ec9eabec5b383e",
+    "deploymentStatus": "NOT_AUTHORIZED_NOT_DEPLOYED",
+    "scope": "OTP routing to the Boselli 80849 public-transport stop; this does not validate an entrance to Stadio Olimpico"
+  },
+  "graph": {
+    "file": "roma-otp-graph-7c8583753e19b682.obj.zst",
+    "sha256": "7c8583753e19b682bf24a7a3c67f6e05e5744f254150d718058830bbfe05966e",
+    "bytes": 452823126,
+    "compressed": {
+      "sha256": "30c129ff9cb2a65b0b0e69eff3a967bb432bd073fafeaf8b351e673b7f68e105",
+      "bytes": 204888629,
+      "format": "zstd"
+    },
+    "buildFingerprint": "acf9c330ce386ee7a7dae3bee860f832d1faceaaf7ac94fda592725f6d09a9bc"
+  },
+  "buildProvenance": {
+    "repository": "Moov3nt/helekh-otp-graph-build",
+    "diagnosticRunId": "45152743324",
+    "diagnosticArtifactId": "14806594528",
+    "diagnosticArtifactName": "otp-graph-diagnostic-UNQUALIFIED-roma-test-45152743324",
+    "diagnosticRunConclusion": "failure",
+    "diagnosticCommit": "764783fe29d0fff18ed6ef54c5761932280287a6",
+    "diagnosticManifestSha256": "646e7f62f203474c870536c4eeb80ff53461dc43a6c97f20e85c4c784a45f059",
+    "diagnosticArtifactPreserved": true,
+    "note": "The failed diagnostic run and its UNQUALIFIED artifact are not altered. Qualification is a later, separately hashed evidence layer over the identical graph bytes."
+  },
+  "software": {
+    "otpVersion": "2.9.0",
+    "otpJarSha256": "6bcd699f9a5d3f4f1ef213aa9a629ac2e808fb771fef3ba137df6c8e56f6b9ff",
+    "javaRuntime": "Eclipse Temurin 25.0.4+7",
+    "buildJavaImage": "eclipse-temurin:25.0.4_7-jre-noble@sha256:b4c93a50fc67612798db73d68ca3b0ee4ebdd51736e59cca370e689b9797037e"
+  },
+  "configuration": {
+    "combinedSha256": "318d4a0d7a0cc0dbc18bb53abe9f012465809a62b8372a7ae0e26ac10e602ed8",
+    "buildConfigSha256": "d74afe34200447dfef3e31f7d64bf02c429bb7683c3733064ee9579e6f555626",
+    "routerConfigSha256": "b4392a07e862514de3289b54bee808d1b96d104e11035526fdd9b56793761697",
+    "otpConfigSha256": "7c95df179db9d4c3ab51a74d30873747707c05820523a99ff89d32a6ffe3eff3"
+  },
+  "inputs": {
+    "gtfs": {
+      "publisher": "Roma Servizi per la Mobilita / Roma Capitale",
+      "sha256": "a861f157bdcad9bc1100cd725bd66cc33664eada027095982e62bd856f59e9eb",
+      "bytes": 44383242,
+      "effectiveFirstServiceDate": "2026-10-21",
+      "effectiveLastServiceDate": "2026-12-31",
+      "validityVerdict": "PASS",
+      "validityReportSha256": "765a3834d32df32d219aecbc2f64abe7e0b2ea124ee3d5b65c35a599856cc321",
+      "conditions": "Journey-support use with attribution"
+    },
+    "osm": {
+      "publisher": "OpenStreetMap contributors; extract by Geofabrik GmbH",
+      "sha256": "604f0fec713a9f751f5c1c2e5d8bc5d415a33299e2527993debeef91625e1df8",
+      "bytes": 387539058,
+      "license": "ODbL 1.0"
+    }
+  },
+  "routingQualification": {
+    "evidenceFile": "roma-routing-check-4d83b9f.json",
+    "evidenceSha256": "79a58a9cd59a5a4f0801a65c7a8f07355cf7702f25d6c716a2d4bd82adee351f",
+    "evidenceBytes": 32572,
+    "execution": "local load of the preserved graph; no rebuild",
+    "date": "2026-11-24",
+    "timezone": "Europe/Rome",
+    "verdict": "PASS",
+    "itineraryCount": 50,
+    "itinerariesWithTransit": 45,
+    "startupMilliseconds": 36354,
+    "responseMilliseconds": [1005.26, 333.32, 503.34, 449.11, 301.3],
+    "checks": [
+      { "name": "termini-to-colosseo-central", "localTime": "12:00", "itineraries": 10, "withTransit": 9, "routingErrors": [], "verdict": "PASS" },
+      { "name": "route-64-plebiscito-to-ponte-vittorio", "localTime": "11:35", "itineraries": 10, "withTransit": 9, "routingErrors": [], "verdict": "PASS" },
+      { "name": "termini-to-boselli-daytime", "localTime": "12:00", "itineraries": 10, "withTransit": 9, "routingErrors": [], "verdict": "PASS" },
+      { "name": "termini-to-boselli-evening", "localTime": "18:00", "itineraries": 10, "withTransit": 9, "routingErrors": [], "verdict": "PASS" },
+      { "name": "boselli-to-termini-late", "localTime": "23:00", "itineraries": 10, "withTransit": 9, "routingErrors": [], "verdict": "PASS" }
+    ],
+    "boselliEndpoint": {
+      "stopId": "80849",
+      "latitude": 41.93463,
+      "longitude": 12.458642,
+      "scopeLimitation": "Public-transport endpoint only; no Stadio Olimpico entrance accessibility has been validated"
+    }
+  },
+  "performance": {
+    "buildSeconds": 271,
+    "buildHeapGigabytes": 12,
+    "qualifiedLoadWorkingSetBytes": 4097118208,
+    "qualifiedLoadPeakWorkingSetBytes": 4098715648,
+    "qualifiedLoadPrivateMemoryBytes": 4199673856
+  },
+  "infrastructureAssessment": {
+    "currentOracleVmMemoryGigabytes": 12,
+    "currentMilanoOtpContainerLimitGigabytes": 8,
+    "simultaneousMilanoRomaVerdict": "NO_GO_CURRENT_CONFIGURATION",
+    "reason": "The current deployment has one graph mount and one OTP endpoint. Two containers at the current 8 GiB limit would exceed the 12 GiB VM before Journey Service and OS overhead; measured Milano runtime memory is not available to justify lower safe limits."
+  }
+}
