@@ -145,14 +145,23 @@ test('13. failed smoke tests cannot publish a verified record', () => {
   const workflow = readFileSync(join(repository, '.github/workflows/build-graph.yml'), 'utf8');
   assert.ok(workflow.indexOf('name: Load the graph and route for real') < workflow.indexOf('name: Publish verified fingerprint record'));
   assert.match(workflow, /--smoke meta\/smoke\.json/);
-  assert.match(workflow, /if \[\[ "\$status" -ne 0 \]\].*exit "\$status"/s);
+  assert.match(workflow, /name: Publish verified fingerprint record\n\s+if: steps\.routing\.outputs\.verdict == 'PASS'/);
+  assert.match(workflow, /name: Upload the graph artifact\n\s+if: steps\.routing\.outputs\.verdict == 'PASS'/);
 });
 
-test('14. Oracle or unrelated application changes are ignored', () => {
+test('14. failed smoke tests preserve explicitly unqualified diagnostics before failing', () => {
+  const workflow = readFileSync(join(repository, '.github/workflows/build-graph.yml'), 'utf8');
+  assert.match(workflow, /UNQUALIFIED - NOT FOR DEPLOYMENT/);
+  assert.match(workflow, /name: Upload unqualified diagnostic artifact\n\s+if: steps\.routing\.outputs\.verdict == 'FAIL'/);
+  assert.ok(workflow.indexOf('name: Upload unqualified diagnostic artifact') < workflow.indexOf('name: Enforce routing qualification'));
+  assert.match(workflow, /--diagnostics-dir meta\/graphql/);
+});
+
+test('15. Oracle or unrelated application changes are ignored', () => {
   assert.deepEqual(classifyChangedFiles(['oracle/schema.sql', 'android/app.gradle', 'journey-service/main.ts'], 'milano-test'), []);
 });
 
-test('15. the existing manual workflow remains available with its defaults', () => {
+test('16. the existing manual workflow remains available with its defaults', () => {
   const workflow = readFileSync(join(repository, '.github/workflows/build-graph.yml'), 'utf8');
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /default: milano-test/);

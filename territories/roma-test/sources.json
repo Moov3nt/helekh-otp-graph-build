@@ -4,6 +4,24 @@
   "timezone": "Europe/Rome",
   "smokes": [
     {
+      "name": "termini-to-colosseo-central",
+      "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
+      "destination": { "label": "Colosseo stop 20389", "latitude": 41.891312, "longitude": 12.492332 },
+      "localTime": "12:00"
+    },
+    {
+      "name": "route-64-plebiscito-to-ponte-vittorio",
+      "origin": { "label": "Plebiscito stop 20153", "latitude": 41.896467, "longitude": 12.480985 },
+      "destination": { "label": "Ponte Vittorio stop 70054", "latitude": 41.90046, "longitude": 12.465345 },
+      "localTime": "11:35"
+    },
+    {
+      "name": "termini-to-stadio-olimpico-daytime",
+      "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
+      "destination": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "localTime": "12:00"
+    },
+    {
       "name": "termini-to-stadio-olimpico",
       "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
       "destination": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },

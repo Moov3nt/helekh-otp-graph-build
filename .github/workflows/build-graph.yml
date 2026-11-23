@@ -99,13 +99,15 @@ jobs:
           [[ -z "$EXPECTED_GTFS_SHA256" || "$EXPECTED_GTFS_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::expected_gtfs_sha256 must be 64 lower-case hex digits or empty"; exit 1; }
           [[ "$HEAP_GB" =~ ^[0-9]{1,2}$ && "$HEAP_GB" -ge 4 && "$HEAP_GB" -le 13 ]] || { echo "::error::heap_gb must be between 4 and 13 on a 16 GB runner"; exit 1; }
           [[ "$RETENTION_DAYS" =~ ^[0-9]{1,2}$ && "$RETENTION_DAYS" -ge 1 && "$RETENTION_DAYS" -le 90 ]] || { echo "::error::retention_days must be between 1 and 90"; exit 1; }
+          mkdir -p work/input work/output dist meta
           memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
           disk_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
           echo "cpus=$(nproc) memory_kb=$memory_kb disk_free_gb=$disk_gb"
+          jq -n --argjson cpus "$(nproc)" --argjson memory "$memory_kb" --argjson disk "$disk_gb" \
+            '{logicalCpuCount: $cpus, totalMemoryKilobytes: $memory, initialDiskFreeGigabytes: $disk}' > meta/runner-metrics.json
           [[ "$memory_kb" -ge 14500000 ]] || { echo "::error::the runner has less than ~14.5 GB RAM; the build needs it"; exit 1; }
           [[ "$disk_gb" -ge 10 ]] || { echo "::error::less than 10 GB free disk"; exit 1; }
           command -v zstd >/dev/null || sudo apt-get install -y -qq zstd
-          mkdir -p work/input work/output dist meta
 
       - name: Calculate deterministic build fingerprint
         id: identity
@@ -191,6 +193,7 @@ jobs:
           echo "graph bytes=$bytes sha256=$(cat meta/graph.sha256)"
 
       - name: Load the graph and route for real
+        id: routing
         timeout-minutes: 20
         env:
           LAST_SERVICE_DATE: ${{ steps.gtfs.outputs.last_service_date }}
@@ -208,18 +211,31 @@ jobs:
             -v "$PWD/otp.jar:/opt/otp/otp.jar:ro" \
             "$image" java -jar /opt/otp/otp.jar --load --abortOnUnknownConfig /var/opentripplanner
           set +e
-          node scripts/otp-smoke.mjs --base http://127.0.0.1:8080 --sources "territories/$TERRITORY/sources.json" --last-service-date "$LAST_SERVICE_DATE" --started-at-epoch-ms "$started_at_ms" --out meta/smoke.json
+          node scripts/otp-smoke.mjs --base http://127.0.0.1:8080 --sources "territories/$TERRITORY/sources.json" --last-service-date "$LAST_SERVICE_DATE" --started-at-epoch-ms "$started_at_ms" --out meta/smoke.json --diagnostics-dir meta/graphql
           status=$?
           set -e
-          if [[ "$status" -ne 0 ]]; then docker logs --tail 80 otp-smoke || true; echo "::error::the loaded graph returned no transit itinerary"; docker rm -f otp-smoke >/dev/null 2>&1 || true; exit "$status"; fi
-          pid=$(docker inspect -f '{{.State.Pid}}' otp-smoke)
-          rss_kb=$(awk '/VmRSS:/ {print $2}' "/proc/$pid/status")
-          peak_rss_kb=$(awk '/VmHWM:/ {print $2}' "/proc/$pid/status")
-          jq -n --argjson rss "$rss_kb" --argjson peak "$peak_rss_kb" \
-            '{residentMemoryKilobytes: $rss, peakResidentMemoryKilobytes: $peak, configuredHeapGigabytes: 6}' > meta/runtime-metrics.json
-          docker rm -f otp-smoke >/dev/null
+          echo "$status" > meta/smoke-exit-code.txt
+          docker logs otp-smoke > meta/otp-runtime.log 2>&1 || true
+          pid=$(docker inspect -f '{{.State.Pid}}' otp-smoke 2>/dev/null || true)
+          rss_kb=0; peak_rss_kb=0
+          if [[ -n "$pid" && -r "/proc/$pid/status" ]]; then
+            rss_kb=$(awk '/VmRSS:/ {print $2}' "/proc/$pid/status")
+            peak_rss_kb=$(awk '/VmHWM:/ {print $2}' "/proc/$pid/status")
+          fi
+          startup_ms=$(jq -r '.startupMilliseconds // 0' meta/smoke.json 2>/dev/null || echo 0)
+          jq -n --argjson rss "${rss_kb:-0}" --argjson peak "${peak_rss_kb:-0}" --argjson startup "${startup_ms:-0}" \
+            '{residentMemoryKilobytes: $rss, peakResidentMemoryKilobytes: $peak, configuredHeapGigabytes: 6, startupMilliseconds: $startup}' > meta/runtime-metrics.json
+          docker rm -f otp-smoke >/dev/null 2>&1 || true
+          if [[ "$status" -eq 0 ]]; then
+            echo "verdict=PASS" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=FAIL" >> "$GITHUB_OUTPUT"
+            echo "::error::the loaded graph did not pass the transit routing checks; an unqualified diagnostic artifact will be preserved"
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
 
       - name: Package graph, manifest and notices
+        if: steps.routing.outputs.verdict == 'PASS'
         env:
           GTFS_SHA256: ${{ steps.gtfs.outputs.sha256 }}
           GTFS_BYTES: ${{ steps.gtfs.outputs.bytes }}
@@ -255,6 +271,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the graph artifact
+        if: steps.routing.outputs.verdict == 'PASS'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: otp-graph-${{ inputs.territory }}-${{ github.run_id }}
@@ -264,6 +281,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish verified fingerprint record
+        if: steps.routing.outputs.verdict == 'PASS'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: otp-graph-verified-${{ inputs.territory }}-${{ steps.identity.outputs.fingerprint }}
@@ -275,3 +293,55 @@ jobs:
             dist/build-identity.json
           retention-days: ${{ inputs.retention_days }}
           if-no-files-found: error
+
+      - name: Package unqualified diagnostic evidence
+        if: steps.routing.outputs.verdict == 'FAIL'
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostic-dist/meta
+          printf '%s\n' 'UNQUALIFIED - NOT FOR DEPLOYMENT' > diagnostic-dist/UNQUALIFIED-NOT-FOR-DEPLOYMENT.txt
+          zstd -T0 -10 --long=27 -q -o diagnostic-dist/graph.obj.zst work/output/graph.obj
+          zstd -tq diagnostic-dist/graph.obj.zst
+          cp -a meta/. diagnostic-dist/meta/
+          if [[ -d work/output/build-report ]]; then cp -a work/output/build-report diagnostic-dist/otp-build-report; fi
+          if [[ -d work/build-report ]]; then cp -a work/build-report diagnostic-dist/otp-build-report; fi
+          graph_bytes=$(stat -c %s work/output/graph.obj)
+          compressed_bytes=$(stat -c %s diagnostic-dist/graph.obj.zst)
+          jq -n \
+            --arg schema otp-unqualified-diagnostic-v1 \
+            --arg qualification 'UNQUALIFIED - NOT FOR DEPLOYMENT' \
+            --arg territory "$TERRITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg commit "$GITHUB_SHA" \
+            --arg graphSha256 "$(cat meta/graph.sha256)" \
+            --arg compressedSha256 "$(sha256sum diagnostic-dist/graph.obj.zst | awk '{print $1}')" \
+            --argjson graphBytes "$graph_bytes" \
+            --argjson compressedBytes "$compressed_bytes" \
+            --argjson smokeExitCode "${{ steps.routing.outputs.status }}" \
+            '{schema: $schema, qualification: $qualification, territory: $territory, runId: $runId, commit: $commit,
+              graph: {sha256: $graphSha256, bytes: $graphBytes, compressed: {sha256: $compressedSha256, bytes: $compressedBytes}},
+              routingCheck: {verdict: "FAIL", exitCode: $smokeExitCode}}' > diagnostic-dist/diagnostic-manifest.json
+          cp NOTICE.md diagnostic-dist/NOTICE.md
+          {
+            echo '### OTP diagnostic graph (unqualified)'
+            echo '- **UNQUALIFIED - NOT FOR DEPLOYMENT**'
+            echo "- territory: \`$TERRITORY\`"
+            echo "- graph SHA-256: \`$(cat meta/graph.sha256)\` ($graph_bytes bytes)"
+            echo "- routing check: FAIL (exit ${{ steps.routing.outputs.status }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unqualified diagnostic artifact
+        if: steps.routing.outputs.verdict == 'FAIL'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: otp-graph-diagnostic-UNQUALIFIED-${{ inputs.territory }}-${{ github.run_id }}
+          path: diagnostic-dist/
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Enforce routing qualification
+        if: steps.routing.outputs.verdict == 'FAIL'
+        run: |
+          echo '::error::routing qualification failed; only the UNQUALIFIED diagnostic artifact was published'
+          exit "${{ steps.routing.outputs.status }}"
