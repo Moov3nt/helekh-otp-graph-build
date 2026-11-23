@@ -4,9 +4,9 @@
 //                      [--today YYYY-MM-DD] [--out result.json]
 //
 // 1. waits for /otp/actuators/health to answer 200 (graph loaded);
-// 2. asks the GraphQL planConnection for itineraries from the smoke origin to the smoke destination, departing at the configured
-//    local time on the first day that is inside the feed's service horizon (tomorrow, or today if tomorrow is past the horizon);
-// 3. passes only if at least one itinerary with at least one transit leg comes back.
+// 2. asks the GraphQL planConnection for every configured smoke query (`smokes`, or the legacy single `smoke`), departing at each
+//    configured local time on the first day that is inside the feed's service horizon (tomorrow, or today if tomorrow is past it);
+// 3. passes only if every query returns at least one itinerary with at least one transit leg.
 // The itineraries are real answers of the loaded graph; nothing is simulated. Exit 0 pass, 2 no itinerary, 1 could not run.
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -17,6 +17,11 @@ const base = need('--base').replace(/\/$/, '');
 const sources = JSON.parse(readFileSync(need('--sources'), 'utf8'));
 const lastServiceDate = need('--last-service-date');
 const zone = sources.timezone;
+const startedAtEpochMilliseconds = Number(args.get('--started-at-epoch-ms') ?? Date.now());
+if (!Number.isFinite(startedAtEpochMilliseconds) || startedAtEpochMilliseconds <= 0) {
+  console.error('otp-smoke: --started-at-epoch-ms must be a positive number');
+  process.exit(1);
+}
 
 const todayIn = () => new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const today = args.get('--today') ?? todayIn();
@@ -31,14 +36,18 @@ function offsetAt(isoDay, localTime) {
   const match = /GMT([+-]\d{2}):?(\d{2})?/.exec(name);
   return match === null ? '+00:00' : `${match[1]}:${match[2] ?? '00'}`;
 }
-const earliestDeparture = `${day}T${sources.smoke.localTime}:00${offsetAt(day, sources.smoke.localTime)}`;
+const smokeQueries = sources.smokes ?? (sources.smoke === undefined ? [] : [sources.smoke]);
+if (!Array.isArray(smokeQueries) || smokeQueries.length === 0) {
+  console.error('otp-smoke: sources must configure smoke or smokes');
+  process.exit(1);
+}
 
 async function waitForHealth(timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   for (;;) {
     try {
       const response = await fetch(`${base}/otp/actuators/health`);
-      if (response.status === 200) return;
+      if (response.status === 200) return Date.now() - startedAtEpochMilliseconds;
     } catch { /* not listening yet */ }
     if (Date.now() > deadline) throw new Error(`OTP did not become healthy within ${timeoutSeconds}s`);
     await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -53,33 +62,52 @@ const QUERY = `query Plan($origin: PlanLabeledLocationInput!, $destination: Plan
 const place = (p) => ({ label: p.label, location: { coordinate: { latitude: p.latitude, longitude: p.longitude } } });
 
 try {
-  await waitForHealth(600);
-  const response = await fetch(`${base}/otp/gtfs/v1`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query: QUERY, variables: { origin: place(sources.smoke.origin), destination: place(sources.smoke.destination), dateTime: { earliestDeparture }, first: 10 } }),
-  });
-  const body = await response.json();
-  if (!response.ok || body.errors !== undefined) throw new Error(`GraphQL error: ${JSON.stringify(body.errors ?? response.status).slice(0, 500)}`);
-  const itineraries = (body.data?.planConnection?.edges ?? []).map((edge) => ({
-    start: edge.node.start,
-    end: edge.node.end,
-    legs: edge.node.legs.map((leg) => ({ mode: leg.mode, seconds: leg.duration, from: leg.from.name, to: leg.to.name })),
-  }));
-  const withTransit = itineraries.filter((it) => it.legs.some((leg) => !['WALK', 'BICYCLE', 'CAR'].includes(leg.mode)));
+  const startupMilliseconds = await waitForHealth(600);
+  const checks = [];
+  for (const smoke of smokeQueries) {
+    const earliestDeparture = `${day}T${smoke.localTime}:00${offsetAt(day, smoke.localTime)}`;
+    const requestedAt = performance.now();
+    const response = await fetch(`${base}/otp/gtfs/v1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: QUERY, variables: { origin: place(smoke.origin), destination: place(smoke.destination), dateTime: { earliestDeparture }, first: 10 } }),
+    });
+    const body = await response.json();
+    const responseMilliseconds = Math.round((performance.now() - requestedAt) * 100) / 100;
+    if (!response.ok || body.errors !== undefined) throw new Error(`GraphQL error: ${JSON.stringify(body.errors ?? response.status).slice(0, 500)}`);
+    const itineraries = (body.data?.planConnection?.edges ?? []).map((edge) => ({
+      start: edge.node.start,
+      end: edge.node.end,
+      legs: edge.node.legs.map((leg) => ({ mode: leg.mode, seconds: leg.duration, from: leg.from.name, to: leg.to.name })),
+    }));
+    const withTransit = itineraries.filter((it) => it.legs.some((leg) => !['WALK', 'BICYCLE', 'CAR'].includes(leg.mode)));
+    checks.push({
+      query: { origin: smoke.origin.label, destination: smoke.destination.label, earliestDeparture },
+      responseMilliseconds,
+      itineraryCount: itineraries.length,
+      itinerariesWithTransit: withTransit.length,
+      itineraries,
+      verdict: withTransit.length > 0 ? 'PASS' : 'FAIL',
+    });
+  }
+  const itineraryCount = checks.reduce((sum, check) => sum + check.itineraryCount, 0);
+  const itinerariesWithTransit = checks.reduce((sum, check) => sum + check.itinerariesWithTransit, 0);
   const result = {
-    schema: 'otp-smoke-result-v1',
-    query: { territory: sources.territory, origin: sources.smoke.origin.label, destination: sources.smoke.destination.label, earliestDeparture, feedLastServiceDate: lastServiceDate },
-    itineraryCount: itineraries.length,
-    itinerariesWithTransit: withTransit.length,
-    itineraries,
-    verdict: withTransit.length > 0 ? 'PASS' : 'FAIL',
+    schema: 'otp-smoke-result-v2',
+    territory: sources.territory,
+    feedLastServiceDate: lastServiceDate,
+    startupMilliseconds,
+    responseMilliseconds: checks.map((check) => check.responseMilliseconds),
+    itineraryCount,
+    itinerariesWithTransit,
+    checks,
+    verdict: checks.every((check) => check.verdict === 'PASS') ? 'PASS' : 'FAIL',
   };
   const text = `${JSON.stringify(result, null, 2)}\n`;
   if (args.get('--out') !== undefined) writeFileSync(args.get('--out'), text);
   process.stdout.write(text);
-  process.exit(result.verdict === 'PASS' ? 0 : 2);
+  process.exitCode = result.verdict === 'PASS' ? 0 : 2;
 } catch (error) {
   console.error(`otp-smoke: ${error.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 }

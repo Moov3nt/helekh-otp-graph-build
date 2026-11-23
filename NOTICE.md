@@ -11,11 +11,22 @@ is subject to their licences. This notice travels with every artifact.
   the derived database under the ODbL.
 
 ## Public-transport timetable (GTFS)
+Each artifact's `manifest.json` identifies the selected territory and exact feed.
+
+### Milano
 - Source: Comune di Milano / AMAT — Agenzia Mobilità Ambiente Territorio, dataset DS929, generated from ATM scheduled service —
   https://dati.comune.milano.it/dataset/ds929-orari-del-trasporto-pubblico-locale-nel-comune-di-milano-in-formato-gtfs
 - Licence stated by the publisher: Creative Commons Attribution 4.0 International (CC BY 4.0) — https://creativecommons.org/licenses/by/4.0/
 - Attribution: Comune di Milano / AMAT. The timetable is the scheduled service only (no real-time data) and is valid only for the dates
   in `gtfs-validity-report.json`; the graph must not be relied on outside them.
+
+### Roma
+- Source: Roma Servizi per la Mobilità / Roma Capitale scheduled-service GTFS —
+  https://romamobilita.it/sistemi-e-tecnologie/open-data/
+- Conditions: Roma Capitale permits reuse of its open datasets with attribution; the RSM source page restricts these mobility data
+  to journey-support use. HELEKH uses the graph only to support journey planning and preserves the attribution.
+- Attribution: Roma Servizi per la Mobilità / Roma Capitale; scheduled service by ATAC and participating operators. The feed is
+  valid only for the dates in `gtfs-validity-report.json` and is provided without warranty.
 
 ## Software
 - OpenTripPlanner 2.9.0 (GNU LGPL v3) — https://www.opentripplanner.org/ — downloaded from Maven Central and not redistributed here.

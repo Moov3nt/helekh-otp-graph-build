@@ -180,7 +180,10 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e "JAVA_TOOL_OPTIONS=-Xmx${HEAP_GB}G" \
             -v "$PWD/work:/var/opentripplanner" -v "$PWD/otp.jar:/opt/otp/otp.jar:ro" \
             "$image" java -jar /opt/otp/otp.jar --build --save --abortOnUnknownConfig /var/opentripplanner
-          echo "build seconds: $(( $(date +%s) - started ))"
+          build_seconds=$(( $(date +%s) - started ))
+          echo "build seconds: $build_seconds"
+          jq -n --argjson seconds "$build_seconds" --argjson heap "$HEAP_GB" \
+            '{seconds: $seconds, configuredHeapGigabytes: $heap}' > meta/build-metrics.json
           [[ -s work/output/graph.obj ]] || { echo "::error::no graph.obj was produced"; exit 1; }
           bytes=$(stat -c %s work/output/graph.obj)
           [[ "$bytes" -gt 50000000 ]] || { echo "::error::graph.obj is implausibly small ($bytes bytes)"; exit 1; }
@@ -197,6 +200,7 @@ jobs:
           mkdir -p serve
           ln work/output/graph.obj serve/graph.obj
           cp config/router-config.json config/otp-config.json serve/
+          started_at_ms=$(date +%s%3N)
           docker run -d --name otp-smoke --user "$(id -u):$(id -g)" -e HOME=/tmp -e JAVA_TOOL_OPTIONS=-Xmx6G -p 127.0.0.1:8080:8080 \
             -v "$PWD/serve/graph.obj:/var/opentripplanner/graph.obj:ro" \
             -v "$PWD/serve/router-config.json:/var/opentripplanner/router-config.json:ro" \
@@ -204,10 +208,15 @@ jobs:
             -v "$PWD/otp.jar:/opt/otp/otp.jar:ro" \
             "$image" java -jar /opt/otp/otp.jar --load --abortOnUnknownConfig /var/opentripplanner
           set +e
-          node scripts/otp-smoke.mjs --base http://127.0.0.1:8080 --sources "territories/$TERRITORY/sources.json" --last-service-date "$LAST_SERVICE_DATE" --out meta/smoke.json
+          node scripts/otp-smoke.mjs --base http://127.0.0.1:8080 --sources "territories/$TERRITORY/sources.json" --last-service-date "$LAST_SERVICE_DATE" --started-at-epoch-ms "$started_at_ms" --out meta/smoke.json
           status=$?
           set -e
           if [[ "$status" -ne 0 ]]; then docker logs --tail 80 otp-smoke || true; echo "::error::the loaded graph returned no transit itinerary"; docker rm -f otp-smoke >/dev/null 2>&1 || true; exit "$status"; fi
+          pid=$(docker inspect -f '{{.State.Pid}}' otp-smoke)
+          rss_kb=$(awk '/VmRSS:/ {print $2}' "/proc/$pid/status")
+          peak_rss_kb=$(awk '/VmHWM:/ {print $2}' "/proc/$pid/status")
+          jq -n --argjson rss "$rss_kb" --argjson peak "$peak_rss_kb" \
+            '{residentMemoryKilobytes: $rss, peakResidentMemoryKilobytes: $peak, configuredHeapGigabytes: 6}' > meta/runtime-metrics.json
           docker rm -f otp-smoke >/dev/null
 
       - name: Package graph, manifest and notices
@@ -224,12 +233,15 @@ jobs:
             --graph-sha256 "$(cat meta/graph.sha256)" --graph-bytes "$(stat -c %s work/output/graph.obj)" \
             --compressed-sha256 "$(sha256sum dist/graph.obj.zst | awk '{print $1}')" --compressed-bytes "$(stat -c %s dist/graph.obj.zst)" \
             --validity meta/validity.json --smoke meta/smoke.json --config-sha256 "$(cat meta/config.sha256)" \
+            --build-metrics meta/build-metrics.json --runtime-metrics meta/runtime-metrics.json \
             --build-fingerprint "${{ steps.identity.outputs.fingerprint }}" \
             --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA" --heap-gb "$HEAP_GB"
           cp NOTICE.md dist/NOTICE.md
           cp meta/build-identity.json dist/build-identity.json
           cp meta/validity.json dist/gtfs-validity-report.json
           cp meta/smoke.json dist/routing-check.json
+          cp meta/build-metrics.json dist/build-metrics.json
+          cp meta/runtime-metrics.json dist/runtime-metrics.json
           ls -l dist
           {
             echo "### OTP graph built"
@@ -238,6 +250,8 @@ jobs:
             echo "- usable until (GTFS last service date): \`$(jq -r .usableUntil dist/manifest.json)\`"
             echo "- graph: $(jq -r .graph.bytes dist/manifest.json) bytes, compressed $(jq -r .graph.compressed.bytes dist/manifest.json) bytes"
             echo "- routing check: $(jq -r .routingCheck.verdict dist/manifest.json), $(jq -r .routingCheck.itinerariesWithTransit dist/manifest.json) itineraries with transit"
+            echo "- startup: $(jq -r .routingCheck.startupMilliseconds dist/manifest.json) ms; response times: $(jq -c .routingCheck.responseMilliseconds dist/manifest.json) ms"
+            echo "- runtime RSS: $(jq -r .performance.runtime.residentMemoryKilobytes dist/manifest.json) KiB; peak: $(jq -r .performance.runtime.peakResidentMemoryKilobytes dist/manifest.json) KiB"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the graph artifact

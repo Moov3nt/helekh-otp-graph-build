@@ -12,6 +12,8 @@ const versions = json('--versions');
 const sources = json('--sources');
 const validity = json('--validity');
 const smoke = json('--smoke');
+const buildMetrics = args.has('--build-metrics') ? json('--build-metrics') : null;
+const runtimeMetrics = args.has('--runtime-metrics') ? json('--runtime-metrics') : null;
 const buildFingerprint = need('--build-fingerprint');
 if (!/^[0-9a-f]{64}$/.test(buildFingerprint)) {
   console.error('write-manifest: --build-fingerprint must be 64 lower-case hex digits');
@@ -32,7 +34,15 @@ const manifest = {
   configurationSha256: need('--config-sha256'),
   gtfsValidity: { referenceDate: validity.referenceDate, ...validity.effective, verdict: validity.verdict },
   graph: { file: 'graph.obj', bytes: Number(need('--graph-bytes')), sha256: need('--graph-sha256'), compressed: { file: 'graph.obj.zst', bytes: Number(need('--compressed-bytes')), sha256: need('--compressed-sha256') } },
-  routingCheck: { verdict: smoke.verdict, itineraryCount: smoke.itineraryCount, itinerariesWithTransit: smoke.itinerariesWithTransit, query: smoke.query },
+  routingCheck: {
+    verdict: smoke.verdict,
+    itineraryCount: smoke.itineraryCount,
+    itinerariesWithTransit: smoke.itinerariesWithTransit,
+    startupMilliseconds: smoke.startupMilliseconds,
+    responseMilliseconds: smoke.responseMilliseconds,
+    checks: smoke.checks?.map((check) => ({ ...check, itineraries: undefined })),
+  },
+  performance: { build: buildMetrics, runtime: runtimeMetrics },
   usableUntil: validity.effective.lastServiceDate,
   note: 'The graph answers transit queries only for dates inside the GTFS validity above. After usableUntil rebuild from a newer feed.',
 };

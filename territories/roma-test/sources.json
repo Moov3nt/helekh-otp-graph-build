@@ -1,0 +1,51 @@
+{
+  "territory": "roma-test",
+  "purpose": "Qualified Roma graph territory. Inputs are immutable snapshots captured from official publishers.",
+  "timezone": "Europe/Rome",
+  "smokes": [
+    {
+      "name": "termini-to-stadio-olimpico",
+      "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
+      "destination": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "localTime": "18:00"
+    },
+    {
+      "name": "stadio-olimpico-to-termini-evening",
+      "origin": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "destination": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
+      "localTime": "23:00"
+    }
+  ],
+  "gtfs": {
+    "name": "Roma scheduled public transport GTFS (Roma Servizi per la Mobilita)",
+    "url": "https://github.com/Moov3nt/helekh-otp-graph-build/releases/download/otp-inputs-roma-20261123/roma-gtfs-20261123.zip",
+    "publisherUrl": "https://romamobilita.it/wp-content/uploads/shared/rome_static_gtfs.zip",
+    "publisherMd5Url": "https://romamobilita.it/wp-content/uploads/shared/rome_static_gtfs.zip.md5",
+    "publisherMd5": "8f9627211b4d1641b40a80796f49208f",
+    "catalogPage": "https://romamobilita.it/sistemi-e-tecnologie/open-data/",
+    "publisher": "Roma Servizi per la Mobilita / Roma Capitale",
+    "version": "acquired-2026-11-23",
+    "bytes": 44383242,
+    "sha256": "a861f157bdcad9bc1100cd725bd66cc33664eada027095982e62bd856f59e9eb",
+    "validFrom": "2026-10-21",
+    "validUntil": "2026-12-31",
+    "license": "Roma Capitale open-data reuse with attribution; RSM data restricted to journey-support use",
+    "licenseUrl": "https://www.comune.roma.it/web/it/open-data.page",
+    "attribution": "Roma Servizi per la Mobilita / Roma Capitale; scheduled service by ATAC and participating operators",
+    "mutable": false,
+    "note": "Snapshot acquired from the official RSM endpoint; publisher MD5 matched at acquisition. Use is limited to journey support and attribution is mandatory."
+  },
+  "osm": {
+    "name": "OpenStreetMap extract, Geofabrik Centro, dated 2026-11-20",
+    "url": "https://github.com/Moov3nt/helekh-otp-graph-build/releases/download/otp-inputs-roma-20261123/centro-261120.osm.pbf",
+    "publisherUrl": "https://download.geofabrik.de/europe/italy/centro/centro-261120.osm.pbf",
+    "publisherMd5Url": "https://download.geofabrik.de/europe/italy/centro/centro-261120.osm.pbf.md5",
+    "md5": "7cd12b43737be4ef64b6c7aa71a5adc2",
+    "bytes": 387539058,
+    "sha256": "604f0fec713a9f751f5c1c2e5d8bc5d415a33299e2527993debeef91625e1df8",
+    "license": "Open Data Commons Open Database License 1.0 (ODbL 1.0)",
+    "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
+    "attribution": "(c) OpenStreetMap contributors; extract by Geofabrik GmbH",
+    "mutable": false
+  }
+}
