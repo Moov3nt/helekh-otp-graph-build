@@ -18,18 +18,18 @@
     {
       "name": "termini-to-stadio-olimpico-daytime",
       "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
-      "destination": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "destination": { "label": "Stadio Olimpico", "latitude": 41.934630, "longitude": 12.458642 },
       "localTime": "12:00"
     },
     {
       "name": "termini-to-stadio-olimpico",
       "origin": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
-      "destination": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "destination": { "label": "Stadio Olimpico", "latitude": 41.934630, "longitude": 12.458642 },
       "localTime": "18:00"
     },
     {
       "name": "stadio-olimpico-to-termini-evening",
-      "origin": { "label": "Stadio Olimpico", "latitude": 41.9341, "longitude": 12.4547 },
+      "origin": { "label": "Stadio Olimpico", "latitude": 41.934630, "longitude": 12.458642 },
       "destination": { "label": "Roma Termini", "latitude": 41.9012, "longitude": 12.5006 },
       "localTime": "23:00"
     }
