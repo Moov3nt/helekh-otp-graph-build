@@ -111,26 +111,37 @@ if(!r.ok||transit.length<1)process.exit(2)})().catch(e=>{console.error(e.message
 
 # health, loaded graph identity and, on a day the graph covers, real routes through OTP and through the Journey Service
 verify_serving() {
-  local sha=$1 until_date=$2 day
+  local sha=$1 until_date=$2 reload=${3:-} day
   wait_for_otp || { log "verify: OTP did not become healthy"; return 1; }
   container_hash_is "$sha" || { log "verify: the container does not serve the expected graph"; return 1; }
+  if [[ -n "$reload" && -n "$JOURNEY_MANIFEST" ]]; then
+    # the service reads the manifest when it starts
+    { "$DOCKER" restart --time 30 "$JOURNEY_CONTAINER" > /dev/null && wait_for_journey; } ||
+      { log "verify: the Journey Service did not come back"; return 1; }
+    log "journey_service_restarted to read the manifest of $sha"
+  fi
   day=$(check_day "$until_date") || return 1
   if [[ "$day" == none ]]; then log "verify: DEGRADED the graph covers no date from today on; transit routes not checked"; return 0; fi
   otp_route "$day" | tee -a "$STATE_DIR/deploy.log" || { log "verify: OTP routing failed"; return 1; }
   journey_route "$day" | tee -a "$STATE_DIR/deploy.log" || { log "verify: Journey routing failed"; return 1; }
 }
 
-journey_identity() { inspect "$JOURNEY_CONTAINER" '{{.Id}} {{.State.StartedAt}} {{.RestartCount}}'; }
+# without a manifest the Journey Service must not restart at all; with one, this script restarts it and nothing else may
+journey_identity() {
+  if [[ -n "$JOURNEY_MANIFEST" ]]; then inspect "$JOURNEY_CONTAINER" '{{.Id}} {{.RestartCount}}'
+  else inspect "$JOURNEY_CONTAINER" '{{.Id}} {{.State.StartedAt}} {{.RestartCount}}'; fi
+}
 
 # puts one file in place of the active graph while OTP is stopped; the bind mount is resolved again at start
 activate() {
-  local file=$1 sha=$2 until_date=$3
+  local file=$1 sha=$2 until_date=$3 manifest=$4
   "$DOCKER" stop --time 30 "$OTP_CONTAINER" > /dev/null &&
     chmod 644 "$file" &&
     { [[ "$(id -u)" != 0 ]] || chown "$GRAPH_OWNER" "$file"; } &&
     mv -f "$file" "$ACTIVE_GRAPH" &&
+    { [[ -z "$JOURNEY_MANIFEST" ]] || write_journey_manifest "$manifest"; } &&
     "$DOCKER" start "$OTP_CONTAINER" > /dev/null &&
-    verify_serving "$sha" "$until_date"
+    verify_serving "$sha" "$until_date" reload
 }
 
 # restores the graph named by the marker; keeps the marker unless the restore is proven
@@ -139,8 +150,10 @@ restore() {
   read -r old_sha old_until _ < "$MARKER" || return 1
   copy="$(dirname "$ACTIVE_GRAPH")/.graph.obj.rollback"
   log "ROLLBACK started restoring=$old_sha"
+  local journey_copy="$BACKUPS/graph-$old_sha.journey.json"
+  [[ -f "$journey_copy" ]] || journey_copy="$BACKUPS/graph-$old_sha.json"
   cp "$BACKUPS/graph-$old_sha.obj" "$copy" && [[ "$(hash_of "$copy")" == "$old_sha" ]] &&
-    activate "$copy" "$old_sha" "$old_until" &&
+    activate "$copy" "$old_sha" "$old_until" "$journey_copy" &&
     cp "$BACKUPS/graph-$old_sha.json" "$ACTIVE_MANIFEST.tmp" && mv -f "$ACTIVE_MANIFEST.tmp" "$ACTIVE_MANIFEST" &&
     rm -f "$MARKER" && log "ROLLBACK PASS restored=$old_sha" && return 0
   log "ROLLBACK INCOMPLETE manual recovery required; backup $BACKUPS/graph-$old_sha.obj"
@@ -155,9 +168,48 @@ preflight() {
   [[ -f "$ACTIVE_GRAPH" ]] || refuse "no active graph at $ACTIVE_GRAPH"
   [[ "$(inspect "$OTP_CONTAINER" '{{.State.Status}}')" == running ]] || [[ -f "$MARKER" ]] || refuse "$OTP_CONTAINER is not running"
   [[ "$(inspect "$JOURNEY_CONTAINER" '{{.State.Status}}')" == running ]] || refuse "$JOURNEY_CONTAINER is not running"
-  if inspect "$JOURNEY_CONTAINER" '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^JOURNEY_SERVICE_OTP_GRAPH_MANIFEST_PATH='; then
-    refuse "the Journey Service now reads an active graph manifest; this script does not update it yet"
-  fi
+  find_journey_manifest
+}
+
+# JI-02: when the Journey Service is configured to read the manifest of the active graph, find that file on the host. Only
+# this one variable is read; no other value of the container's environment is kept or logged.
+find_journey_manifest() {
+  local inside destination source best=""
+  JOURNEY_MANIFEST=""
+  inside=$(inspect "$JOURNEY_CONTAINER" '{{range .Config.Env}}{{println .}}{{end}}' |
+    sed -n 's/^JOURNEY_SERVICE_OTP_GRAPH_MANIFEST_PATH=//p') || refuse "cannot inspect $JOURNEY_CONTAINER"
+  [[ -n "$inside" ]] || return 0
+  while IFS='|' read -r destination source; do
+    [[ -n "$destination" ]] || continue
+    if [[ "$inside" == "$destination" || "$inside" == "${destination%/}/"* ]] && (( ${#destination} > ${#best} )); then
+      best=$destination
+      JOURNEY_MANIFEST="$source${inside#"$destination"}"
+    fi
+  done < <(inspect "$JOURNEY_CONTAINER" '{{range .Mounts}}{{.Destination}}|{{.Source}}{{println}}{{end}}')
+  [[ -n "$JOURNEY_MANIFEST" && -f "$JOURNEY_MANIFEST" ]] || refuse "the Journey Service reads a graph manifest that cannot be located on the host"
+}
+
+require_coherent_journey_manifest() {
+  [[ -n "$JOURNEY_MANIFEST" ]] || return 0
+  [[ "$(field graph.sha256 "$JOURNEY_MANIFEST")" == "$ACTIVE_SHA" ]] ||
+    refuse "the manifest read by the Journey Service does not describe the active graph"
+  log "journey_manifest coherent with the active graph"
+}
+
+# replaces the content the Journey Service reads, keeping owner and permissions of the file
+write_journey_manifest() {
+  local temporary="$JOURNEY_MANIFEST.next"
+  cp "$1" "$temporary" && chmod --reference="$JOURNEY_MANIFEST" "$temporary" &&
+    { [[ "$(id -u)" != 0 ]] || chown --reference="$JOURNEY_MANIFEST" "$temporary"; } &&
+    mv -f "$temporary" "$JOURNEY_MANIFEST"
+}
+
+wait_for_journey() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT))
+  until "$CURL" -fsS --max-time 10 "$JOURNEY_URL/health" > /dev/null 2>&1; do
+    (( SECONDS < deadline )) || return 1
+    sleep "$HEALTH_INTERVAL"
+  done
 }
 
 require_known_active() {
@@ -183,6 +235,7 @@ if(m.schema!=="otp-graph-manifest-v2"||m.territory!==territory||tag!=="otp-graph
 if(m.routingCheck?.verdict!=="PASS"||!(m.routingCheck?.itinerariesWithTransit>0)||m.gtfsValidity?.verdict!=="PASS")return no("not-qualified");
 if(!hex(m.graph?.sha256)||!hex(m.graph?.compressed?.sha256)||!(m.graph.bytes>0)||!(m.graph.compressed.bytes>0)||!/^[1-9][0-9]*$/.test(String(m.workflow?.runId)))return no("incomplete");
 if(m.graph.sha256===activeSha)return no("already-active");
+if(!/^\d{4}-\d{2}-\d{2}$/.test(m.gtfsValidity.firstServiceDate??"")||m.gtfsValidity.lastServiceDate!==m.usableUntil||!hex(m.inputs?.gtfs?.sha256))return no("manifest-unusable-by-journey");
 if(!/^\d{4}-\d{2}-\d{2}$/.test(m.usableUntil??"")||m.usableUntil<=today)return no("does-not-cover-tomorrow");
 if(m.usableUntil<activeUntil)return no("covers-less-than-active");
 console.log(["ok",m.workflow.runId,m.usableUntil,m.graph.sha256,m.graph.bytes,m.graph.compressed.sha256,m.graph.compressed.bytes,m.builtAtUtc].join(" "))})' "$@"
@@ -235,6 +288,10 @@ backup_active() {
   fi
   [[ "$(hash_of "$BACKUPS/graph-$ACTIVE_SHA.obj")" == "$ACTIVE_SHA" ]] || refuse "backup differs from the active graph"
   cp "$ACTIVE_MANIFEST" "$BACKUPS/graph-$ACTIVE_SHA.json" || refuse "manifest backup failed"
+  rm -f "$BACKUPS/graph-$ACTIVE_SHA.journey.json"
+  if [[ -n "$JOURNEY_MANIFEST" ]]; then
+    cp "$JOURNEY_MANIFEST" "$BACKUPS/graph-$ACTIVE_SHA.journey.json" || refuse "Journey manifest backup failed"
+  fi
 }
 
 # switches from the active graph to $1 (staged file), restoring on any failure
@@ -248,7 +305,7 @@ switch_to() {
   trap 'log "interrupted"; restore && exit 2 || exit 3' INT TERM HUP
   started=$(date +%s)
   log "interruption_started target=$sha"
-  if activate "$file" "$sha" "$until_date" && [[ "$(journey_identity)" == "$before" ]] &&
+  if activate "$file" "$sha" "$until_date" "$manifest" && [[ "$(journey_identity)" == "$before" ]] &&
     cp "$manifest" "$ACTIVE_MANIFEST.tmp" && mv -f "$ACTIVE_MANIFEST.tmp" "$ACTIVE_MANIFEST"; then
     finished=$(date +%s)
     echo "$ACTIVE_SHA" > "$PREVIOUS"
@@ -269,7 +326,7 @@ prune() {
   for file in "$BACKUPS"/graph-*.obj; do
     [[ -e "$file" ]] || continue
     sha=${file##*/graph-}; sha=${sha%.obj}
-    [[ " ${keep[*]} " == *" $sha "* ]] || rm -f "$file" "$BACKUPS/graph-$sha.json"
+    [[ " ${keep[*]} " == *" $sha "* ]] || rm -f "$file" "$BACKUPS/graph-$sha.json" "$BACKUPS/graph-$sha.journey.json"
   done
   rm -rf "$STAGING"
 }
@@ -304,10 +361,13 @@ main() {
     [[ -f "$manifest" ]] || refuse "adopt needs the manifest of the active graph"
     [[ "$(field graph.sha256 "$manifest")" == "$(hash_of "$ACTIVE_GRAPH")" ]] || refuse "that manifest does not describe the active graph"
     field usableUntil "$manifest" > /dev/null || refuse "that manifest has no usableUntil"
+    ACTIVE_SHA=$(hash_of "$ACTIVE_GRAPH")
+    require_coherent_journey_manifest
     cp "$manifest" "$ACTIVE_MANIFEST" && log "adopted active graph $(hash_of "$ACTIVE_GRAPH")"
     exit 0
   fi
   require_known_active
+  require_coherent_journey_manifest
   mkdir -p "$STAGING"
   if [[ "$command" == rollback ]]; then
     local previous copy previous_until

@@ -14,9 +14,17 @@ case "$command" in
     case "$format" in
       '{{.State.Status}}') if [[ -f "$state/$name.running" ]]; then echo running; else echo exited; fi ;;
       '{{.Id}} {{.State.StartedAt}} {{.RestartCount}}') echo "id-$name $(cat "$state/$name.started") 0" ;;
+      '{{.Id}} {{.RestartCount}}') echo "id-$name 0" ;;
       *'.Config.Env'*) cat "$state/$name.env" ;;
+      *'.Mounts'*) cat "$state/$name.mounts" 2> /dev/null || true ;;
       *) echo "unexpected format $format" >&2; exit 64 ;;
     esac
+    ;;
+  restart)
+    name=${@: -1}
+    touch "$state/$name.running"
+    echo restarted >> "$state/$name.started"
+    if [[ -f "$state/journey_manifest_path" ]]; then cp "$(cat "$state/journey_manifest_path")" "$state/journey-read.json"; fi
     ;;
   stop)
     rm -f "$state/${@: -1}.running"

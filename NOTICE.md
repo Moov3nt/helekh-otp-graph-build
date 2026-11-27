@@ -17,6 +17,14 @@ is subject to their licences. This notice travels with every artifact.
 - Attribution: Comune di Milano / AMAT. The timetable is the scheduled service only (no real-time data) and is valid only for the dates
   in `gtfs-validity-report.json`; the graph must not be relied on outside them.
 
+## Licence of the graph, and changes made to the sources
+- The graph, as a database, is offered under the ODbL 1.0 (link above). A copy is the file published with this notice, free
+  of charge and without technical measures restricting its use.
+- Neither source was edited by hand. OpenTripPlanner converted and linked the street data and the timetable into this
+  routing graph: the timetable is therefore included in a modified form. Its contents remain under CC BY 4.0, with the
+  attribution above, and no further condition is imposed on them.
+- The publishers named above do not endorse this graph.
+
 ## Software
 - OpenTripPlanner 2.9.0 (GNU LGPL v3) — https://www.opentripplanner.org/ — downloaded from Maven Central and not redistributed here.
 - Eclipse Temurin JRE container image, pinned by digest in `versions.json`.

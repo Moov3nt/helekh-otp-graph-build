@@ -22,7 +22,8 @@ function graphRelease(port, { content = 'NEW-GRAPH', letter = 'a', usableUntil =
   const tag = `otp-graph-milano-test-${fp(letter)}`;
   const manifest = {
     schema: 'otp-graph-manifest-v2', territory: 'milano-test', buildFingerprint: fp(letter), builtAtUtc: '2026-12-01T01:00:00.000Z', workflow: { runId: String(runId) },
-    gtfsValidity: { verdict: 'PASS' }, routingCheck: { verdict: 'PASS', itinerariesWithTransit: 4 }, usableUntil,
+    gtfsValidity: { verdict: 'PASS', firstServiceDate: '2026-11-30', lastServiceDate: usableUntil }, inputs: { gtfs: { sha256: fp('9') } },
+    routingCheck: { verdict: 'PASS', itinerariesWithTransit: 4 }, usableUntil,
     graph: { sha256: sha(content), bytes: Buffer.byteLength(content), compressed: { sha256: sha(content), bytes: Buffer.byteLength(content) } },
   };
   change(manifest);
@@ -33,7 +34,7 @@ function graphRelease(port, { content = 'NEW-GRAPH', letter = 'a', usableUntil =
   };
 }
 
-async function host(t, { oldContent = 'OLD-GRAPH', oldUntil = '2026-12-20', releases = [{}], untrusted = [], adopt = true } = {}) {
+async function host(t, { oldContent = 'OLD-GRAPH', oldUntil = '2026-12-20', releases = [{}], untrusted = [], adopt = true, manifestFor = null } = {}) {
   const directory = slashes(mkdtempSync(join(tmpdir(), 'helekh-deploy-')));
   const fake = `${directory}/docker-state`;
   const state = `${directory}/state`;
@@ -46,6 +47,16 @@ async function host(t, { oldContent = 'OLD-GRAPH', oldUntil = '2026-12-20', rele
     writeFileSync(`${fake}/${name}.running`, '');
     writeFileSync(`${fake}/${name}.started`, '2026-11-18T10:43:14Z');
     writeFileSync(`${fake}/${name}.env`, 'JOURNEY_SERVICE_MODE=PROTECTED\n');
+  }
+  const journeyManifest = `${directory}/journey-data/active-graph-manifest.json`;
+  if (manifestFor !== null) { // the Journey Service reads the manifest through a mounted directory
+    mkdirSync(`${directory}/journey-data`);
+    const content = JSON.stringify({ schema: 'otp-graph-manifest-v1', usableUntil: oldUntil, graph: { sha256: sha(manifestFor) } });
+    writeFileSync(journeyManifest, content);
+    writeFileSync(`${fake}/journey-read.json`, content);
+    writeFileSync(`${fake}/helekh-journey.env`, 'JOURNEY_SERVICE_MODE=PROTECTED\nSECRET_KEY=do-not-log\nJOURNEY_SERVICE_OTP_GRAPH_MANIFEST_PATH=/var/lib/journey/active-graph-manifest.json\n');
+    writeFileSync(`${fake}/helekh-journey.mounts`, `/app|/nowhere\n/var/lib/journey|${directory}/journey-data\n`);
+    writeFileSync(`${fake}/journey_manifest_path`, journeyManifest);
   }
   const requests = [];
   let published = [];
@@ -67,7 +78,10 @@ async function host(t, { oldContent = 'OLD-GRAPH', oldUntil = '2026-12-20', rele
       if (url.pathname === '/health') return send(200, { status: 'ok' });
       if (url.pathname === '/journey-intelligence/session') return send(200, { token: 'test-token' });
       if (url.pathname === '/journey-intelligence/outbound-alternatives') {
-        const mode = loaded.includes('BROKEN-JOURNEY') ? 'Walk' : 'Metro';
+        // like JI-02: transit only if the manifest the service read when it started describes the graph in service
+        const read = existsSync(`${fake}/journey-read.json`) ? JSON.parse(readFileSync(`${fake}/journey-read.json`, 'utf8')) : null;
+        const incoherent = read !== null && read.graph.sha256 !== sha(loaded);
+        const mode = loaded.includes('BROKEN-JOURNEY') || incoherent ? 'Walk' : 'Metro';
         requests.push(`arriveBy ${JSON.parse(body).arriveByIso}`);
         return send(up && request.headers.authorization === 'Bearer test-token' ? 200 : 503, { contractVersion: '1.7', alternatives: [{ legs: [{ mode: 'Walk' }, { mode }] }] });
       }
@@ -106,6 +120,8 @@ async function host(t, { oldContent = 'OLD-GRAPH', oldUntil = '2026-12-20', rele
     loaded: () => readFileSync(`${fake}/loaded`, 'utf8'),
     stops: () => (existsSync(`${fake}/calls.log`) ? readFileSync(`${fake}/calls.log`, 'utf8') : '').split('\n').filter((line) => line.startsWith('stop ')).length,
     manifest: () => JSON.parse(readFileSync(`${state}/active-manifest.json`, 'utf8')),
+    journeyManifest: () => JSON.parse(readFileSync(journeyManifest, 'utf8')),
+    journeyRestarts: () => (existsSync(`${fake}/calls.log`) ? readFileSync(`${fake}/calls.log`, 'utf8') : '').split('\n').filter((line) => line.startsWith('restart ')).length,
   };
   if (adopt) {
     // the manifest of the graph installed by hand is the older schema
@@ -278,10 +294,62 @@ test('an unrecorded or changed active graph is refused', async (t) => {
   assert.equal(h.stops(), 0);
 });
 
-test('a Journey Service that reads a graph manifest is refused until the script supports it', async (t) => {
+test('without a Journey manifest the Journey Service is never restarted', async (t) => {
+  const h = await host(t);
+  assert.equal((await h.run(['apply'])).code, 0);
+  assert.equal(h.journeyRestarts(), 0);
+});
+
+test('with a Journey manifest, graph and manifest change together and the service reads it', async (t) => {
+  const h = await host(t, { manifestFor: 'OLD-GRAPH' });
+  const result = await h.run(['apply']);
+  assert.equal(result.code, 0, result.output);
+  assert.equal(h.graph(), 'NEW-GRAPH');
+  assert.equal(h.journeyManifest().graph.sha256, sha('NEW-GRAPH'));
+  assert.equal(h.manifest().graph.sha256, sha('NEW-GRAPH'));
+  assert.equal(h.journeyRestarts(), 1);
+  assert.doesNotMatch(result.output + readFileSync(`${h.state}/deploy.log`, 'utf8'), /do-not-log/);
+});
+
+test('with a Journey manifest, a failed graph restores both', async (t) => {
+  const h = await host(t, { manifestFor: 'OLD-GRAPH', releases: [{ content: 'NEW-BROKEN-OTP-ROUTE' }] });
+  const result = await h.run(['apply']);
+  assert.equal(result.code, 2, result.output);
+  assert.equal(h.graph(), 'OLD-GRAPH');
+  assert.equal(h.journeyManifest().graph.sha256, sha('OLD-GRAPH'));
+  assert.equal(h.journeyRestarts(), 2);
+});
+
+test('with a Journey manifest, a manual rollback restores both', async (t) => {
+  const h = await host(t, { manifestFor: 'OLD-GRAPH' });
+  assert.equal((await h.run(['apply'])).code, 0);
+  const result = await h.run(['rollback']);
+  assert.equal(result.code, 0, result.output);
+  assert.equal(h.journeyManifest().graph.sha256, sha('OLD-GRAPH'));
+});
+
+test('a manifest that does not describe the active graph blocks every change', async (t) => {
+  const h = await host(t, { manifestFor: 'SOME-OTHER-GRAPH', adopt: false });
+  writeFileSync(`${h.directory}/old.json`, JSON.stringify({ usableUntil: '2026-12-20', graph: { sha256: sha('OLD-GRAPH') } }));
+  const adopted = await h.run(['adopt', `${h.directory}/old.json`]);
+  assert.equal(adopted.code, 1, adopted.output);
+  assert.match(adopted.output, /does not describe the active graph/);
+  untouched(h, adopted);
+});
+
+test('a manifest that cannot be found on the host blocks every change', async (t) => {
   const h = await host(t);
   writeFileSync(`${h.fake}/helekh-journey.env`, 'JOURNEY_SERVICE_OTP_GRAPH_MANIFEST_PATH=/var/lib/x.json\n');
+  writeFileSync(`${h.fake}/helekh-journey.mounts`, '/app|/nowhere\n');
   const result = await h.run(['apply']);
   assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /cannot be located/);
+  untouched(h, result);
+});
+
+test('a release the Journey Service could not verify is not installed', async (t) => {
+  const h = await host(t, { releases: [{ manifest: (m) => { delete m.inputs; } }] });
+  const result = await h.run(['apply']);
+  assert.match(result.output, /manifest-unusable-by-journey/);
   untouched(h, result);
 });

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  buildThroughOrchestrator, checkPromotedSources, createChainGitHubApi, decide, dispatchAndWait, graphTag, promoteAndMerge, verifyGraphBundle,
+  applyRetryBound, buildThroughOrchestrator, checkPromotedSources, consecutiveFailures, createChainGitHubApi, decide, dispatchAndWait, graphTag,
+  promoteAndMerge, TransientError, verifyGraphBundle,
 } from '../scripts/auto02-chain.mjs';
 import { buildPromotionPlan } from '../scripts/promote-gtfs-candidate.mjs';
 
@@ -28,7 +29,7 @@ const report = (overrides = {}) => ({
   expiry: { daysRemaining: 40 }, feedInfo: { version: '426' }, ...overrides,
 });
 const retained = (runId = '77', extra = {}) => [{ name: `gtfs-monitor-candidate-${territory}-gtfs-${runId}-${sha}`, expired: false, expires_at: '2026-12-04T05:00:00Z', ...extra }];
-const input = (extra = {}) => ({ report: report(), artifacts: retained(), sources, territory, runId: '77', lastSourcesCommit: null, graphPublished: false, now, ...extra });
+const input = (extra = {}) => ({ report: report(), artifacts: retained(), sources, territory, runId: '77', lastSourcesCommit: null, graphDone: false, now, ...extra });
 
 test('a retained valid new feed is promoted', () => {
   const result = decide(input());
@@ -57,13 +58,13 @@ test('invalid, unlicensed, unretained or expired candidates are skipped', () => 
   assert.equal(decide(input({ report: null })).action, 'SKIP');
 });
 
-test('a merged promotion without a graph is resumed, a published one is not', () => {
+test('a merged promotion without a finished graph is resumed, a finished one is not', () => {
   const lastSourcesCommit = { sha: head, parent, message: `chore(gtfs): promote ${territory} ${sha}` };
   const unchanged = report({ state: 'UNCHANGED', candidate: { sha256: sources.gtfs.sha256, bytes: sources.gtfs.bytes, change: 'UNCHANGED' } });
   const resumed = decide(input({ report: unchanged, lastSourcesCommit }));
   assert.equal(resumed.action, 'RESUME');
   assert.equal(resumed.compareWith, parent);
-  assert.equal(decide(input({ report: unchanged, lastSourcesCommit, graphPublished: true })).action, 'SKIP');
+  assert.equal(decide(input({ report: unchanged, lastSourcesCommit, graphDone: true })).action, 'SKIP');
 });
 
 const promotedText = buildPromotionPlan({ report: report(), sources, sourcesText, repository }).updatedSourcesText;
@@ -88,31 +89,45 @@ test('any other change blocks the merge', () => {
   assert.ok(check((s) => { s.extra = 1; }).length > 0);
 });
 
+const BRANCH_COMMIT = { sha: head, parents: [base], message: `chore(gtfs): promote ${territory} ${sha}`, files: ['territories/milano-test/sources.json'] };
+
+/** A small model of the repository: the branch appears when the promotion runs, main moves on the fast-forward. */
 function promotionApi(options = {}) {
   const calls = [];
-  let main = base;
-  let dispatched = false;
+  const state = { main: base, branch: options.leftover ?? null, runs: 0, merged: false };
+  const commits = { [head]: { ...BRANCH_COMMIT, ...(options.commit ?? {}) }, ...(options.commits ?? {}) };
+  const plan = options.plan ?? []; // per promotion run: what goes wrong
+  const outcome = () => plan[state.runs - 1] ?? {};
   return {
-    calls,
-    async getMainSha() { return options.mainMoves && dispatched ? '9'.repeat(40) : main; },
-    async getFile(path, ref) { return ref === base ? sourcesText : (options.after ?? promotedText); },
-    async listRuns() { return dispatched ? [{ id: 500, event: 'workflow_dispatch', head_sha: base }] : [{ id: 1, event: 'workflow_dispatch', head_sha: base }]; },
-    async dispatch(workflow, inputs) { dispatched = true; calls.push(['dispatch', workflow, inputs]); },
-    async getRun() { return { status: 'completed', conclusion: options.conclusion ?? 'success' }; },
-    async listJobs() { return [{ name: 'Acquire and validate without mutation', conclusion: options.validation ?? 'success' }]; },
-    async getBranchSha() { return options.noBranch ? null : head; },
-    async getCommit() { return { sha: head, parents: [options.parent ?? base], message: `chore(gtfs): promote ${territory} ${sha}`, files: options.files ?? ['territories/milano-test/sources.json'] }; },
-    async getRelease() { return { assets: [{ name: `${territory}-gtfs-${sha}.zip`, size: options.assetSize ?? 1000, digest: `sha256:${sha}` }] }; },
-    async fastForwardMain(to) { calls.push(['fastForward', to]); main = to; },
+    calls, state,
+    async getMainSha() { return options.mainMoves && state.runs > 0 && !state.merged ? (outcome().moves ? '9'.repeat(40) : state.main) : state.main; },
+    async getFile(path, ref) { return ref === head ? (options.after ?? promotedText) : sourcesText; },
+    async lastCommitFor() { return { sha: head, parent: base, message: BRANCH_COMMIT.message }; },
+    async listRuns() { return Array.from({ length: state.runs + 1 }, (_, i) => ({ id: i + 1, event: 'workflow_dispatch', head_sha: state.main })); },
+    async dispatch(workflow, inputs) {
+      state.runs += 1;
+      calls.push(['dispatch', workflow, inputs]);
+      if (!outcome().noBranch) state.branch = head;
+    },
+    async getRun() { return { status: 'completed', conclusion: outcome().conclusion ?? options.conclusion ?? 'success' }; },
+    async listJobs() { return [{ name: 'Acquire and validate without mutation', conclusion: outcome().validation ?? 'success' }]; },
+    async getBranchSha() { return state.branch; },
+    async getCommit(id) { return commits[id]; },
+    async getRelease() { return outcome().noRelease ? null : { assets: [{ name: `${territory}-gtfs-${sha}.zip`, size: options.assetSize ?? 1000, digest: `sha256:${sha}` }] }; },
+    async fastForwardMain(to) { calls.push(['fastForward', to]); state.main = to; state.merged = true; },
+    async deletePromotionBranch(t, s) { calls.push(['delete', t, s]); state.branch = null; },
   };
 }
 const quick = { pollMilliseconds: 0, sleep: async () => {} };
-const promote = (api) => promoteAndMerge({ api, repository, territory, monitorRunId: '77', sha256: sha, wait: quick });
+const pauses = [];
+const promote = (api) => promoteAndMerge({ api, repository, territory, monitorRunId: '77', sha256: sha, wait: quick, pause: async (ms) => { pauses.push(ms); } });
+const kinds = (api) => api.calls.map((call) => call[0]);
 
 test('promotion reuses the monitor candidate and fast-forwards main', async () => {
   const api = promotionApi();
   const result = await promote(api);
   assert.equal(result.mergedSha, head);
+  assert.equal(result.attempts, 1);
   assert.deepEqual(api.calls[0], ['dispatch', 'promote-gtfs.yml', { territory, source: 'gtfs', acquisition_mode: 'monitor_artifact', monitor_run_id: '77' }]);
   assert.deepEqual(api.calls[1], ['fastForward', head]);
 });
@@ -122,16 +137,86 @@ test('a promotion that only failed to open its pull request is still merged', as
   assert.equal((await promote(api)).mergedSha, head);
 });
 
-test('nothing is merged when the promotion evidence is wrong', async () => {
+test('temporary failures are retried by themselves and then succeed', async () => {
+  for (const first of [{ validation: 'failure', noBranch: true }, { noBranch: true, conclusion: 'failure' }, { noRelease: true }]) {
+    const api = promotionApi({ plan: [first] });
+    const result = await promote(api);
+    assert.equal(result.attempts, 2, JSON.stringify(first));
+    assert.equal(kinds(api).filter((k) => k === 'fastForward').length, 1);
+  }
+});
+
+test('retries are bounded', async () => {
+  const fails = { validation: 'failure', noBranch: true }; // a run that fails validation creates nothing
+  const api = promotionApi({ plan: [fails, fails, fails, {}] });
+  await assert.rejects(promote(api), TransientError);
+  assert.equal(api.state.runs, 3);
+  assert.equal(api.state.merged, false);
+});
+
+test('a branch left on an older main is replaced without a person', async () => {
+  const stale = '5'.repeat(40);
+  const api = promotionApi({ leftover: stale, commits: { [stale]: { ...BRANCH_COMMIT, sha: stale, parents: [parent] } } });
+  assert.equal((await promote(api)).mergedSha, head);
+  assert.deepEqual(api.calls[0], ['delete', territory, sha]);
+  assert.deepEqual(kinds(api), ['delete', 'dispatch', 'fastForward']);
+});
+
+test('a complete branch left on the current main is merged without promoting again', async () => {
+  const api = promotionApi({ leftover: head });
+  const result = await promote(api);
+  assert.equal(result.promotionRunId, null);
+  assert.deepEqual(kinds(api), ['fastForward']);
+});
+
+test('running again after the merge changes nothing', async () => {
+  const api = promotionApi();
+  api.getFile = async () => promotedText;
+  const result = await promote(api);
+  assert.deepEqual(api.calls, []);
+  assert.equal(result.baseSha, base);
+});
+
+test('a branch that is not a promotion is never deleted or merged', async () => {
+  const foreign = '5'.repeat(40);
+  for (const change of [{ message: 'work in progress' }, { files: ['territories/milano-test/sources.json', 'x'] }, { parents: [parent, base] }]) {
+    const api = promotionApi({ leftover: foreign, commits: { [foreign]: { ...BRANCH_COMMIT, sha: foreign, ...change } } });
+    await assert.rejects(promote(api), /left untouched/);
+    assert.deepEqual(api.calls, []);
+  }
+});
+
+test('wrong evidence stops at the first attempt and merges nothing', async () => {
   const cases = {
-    validation: { validation: 'failure' }, branch: { noBranch: true }, parent: { parent }, files: { files: ['territories/milano-test/sources.json', '.github/workflows/x.yml'] },
-    asset: { assetSize: 999 }, moved: { mainMoves: true }, content: { after: sourcesText },
+    files: { commit: { files: ['territories/milano-test/sources.json', '.github/workflows/x.yml'] } },
+    message: { commit: { message: 'other' } }, asset: { assetSize: 999 }, content: { after: sourcesText },
   };
   for (const [name, options] of Object.entries(cases)) {
     const api = promotionApi(options);
     await assert.rejects(promote(api), undefined, name);
-    assert.equal(api.calls.filter((call) => call[0] === 'fastForward').length, 0, name);
+    assert.equal(api.state.runs, 1, name);
+    assert.equal(api.state.merged, false, name);
   }
+});
+
+test('automatic runs stop after repeated failures; a manual run is still allowed', () => {
+  const runs = [10, 9, 8, 7, 6].map((id) => ({ id, status: 'completed', conclusion: 'failure' }));
+  assert.equal(consecutiveFailures([...runs, { id: 11, status: 'in_progress' }, { id: 5, status: 'completed', conclusion: 'success' }], 11), 5);
+  assert.equal(consecutiveFailures([{ id: 12, status: 'completed', conclusion: 'success' }, ...runs], 13), 0);
+  const promoteDecision = { action: 'PROMOTE', reason: 'x' };
+  assert.equal(applyRetryBound(promoteDecision, { failures: 5, event: 'workflow_run' }).action, 'BLOCKED');
+  assert.equal(applyRetryBound(promoteDecision, { failures: 4, event: 'workflow_run' }).action, 'PROMOTE');
+  assert.equal(applyRetryBound(promoteDecision, { failures: 9, event: 'workflow_dispatch' }).action, 'PROMOTE');
+  assert.equal(applyRetryBound({ action: 'SKIP' }, { failures: 9, event: 'workflow_run' }).action, 'SKIP');
+});
+
+test('the client can delete only a promotion branch', async () => {
+  const calls = [];
+  const api = createChainGitHubApi({ repository, token: 't', sleep: async () => {}, fetchImpl: async (url, o) => { calls.push([o.method, url]); return { ok: true, status: 204 }; } });
+  await assert.rejects(api.deletePromotionBranch('milano-test', 'main'), /refusing/);
+  await assert.rejects(api.deletePromotionBranch('../heads/main', sha), /refusing/);
+  await api.deletePromotionBranch(territory, sha);
+  assert.deepEqual(calls, [['DELETE', `https://api.github.com/repos/${repository}/git/refs/heads/auto/gtfs-${territory}-${sha}`]]);
 });
 
 test('waiting refuses to guess between two new runs and times out without one', async () => {

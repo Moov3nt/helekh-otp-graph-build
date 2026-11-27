@@ -1,8 +1,9 @@
 name: AUTO-02 graph update chain
 
 # Links the existing AUTO-01 stages: monitor -> promotion -> conditional build and qualification -> published graph.
-# Nothing runs unless the repository variable AUTO02_ENABLED is exactly 'true'. It deploys nothing: the server pulls a
-# published graph by itself (deploy/oracle).
+# Nothing runs unless the repository variable AUTO02_ENABLED is exactly 'true'. A qualified graph is published only if
+# AUTO02_PUBLICATION_APPROVED is also 'true'. It deploys nothing: the server pulls a published graph by itself
+# (deploy/oracle).
 on:
   workflow_run:
     workflows: ["Monitor mobility sources (observe only)"]
@@ -56,6 +57,7 @@ jobs:
         id: decide
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PUBLICATION_APPROVED: ${{ vars.AUTO02_PUBLICATION_APPROVED }}
         run: |
           set -euo pipefail
           [[ "$MONITOR_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "::error::invalid monitor run ID"; exit 1; }
@@ -67,13 +69,14 @@ jobs:
             echo "compare_with=$(jq -r '.compareWith // ""' decision.json)"
           } >> "$GITHUB_OUTPUT"
           echo "### AUTO-02 — $(jq -r .action decision.json): $(jq -r .reason decision.json)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$(jq -r .action decision.json)" == "BLOCKED" ]]; then echo "::error::$(jq -r .reason decision.json)"; exit 1; fi
 
   promote:
     name: Promote the new feed
     needs: gate
     if: needs.gate.outputs.action == 'PROMOTE'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 110
     permissions:
       actions: write
       contents: write
@@ -130,7 +133,7 @@ jobs:
   publish:
     name: Publish the qualified graph
     needs: build
-    if: "!cancelled() && needs.build.result == 'success'"
+    if: "!cancelled() && needs.build.result == 'success' && vars.AUTO02_PUBLICATION_APPROVED == 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
