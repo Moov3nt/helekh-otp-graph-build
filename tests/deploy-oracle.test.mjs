@@ -294,6 +294,17 @@ test('an unrecorded or changed active graph is refused', async (t) => {
   assert.equal(h.stops(), 0);
 });
 
+test('without the decompressor check still reports and apply refuses before anything', async (t) => {
+  const h = await host(t);
+  const environment = { ZSTD_DECOMPRESS: 'no-such-decompressor -d' };
+  const checked = await h.run(['check'], environment);
+  assert.equal(checked.code, 0, checked.output);
+  assert.match(checked.output, /WARNING no-such-decompressor is missing/);
+  const applied = await h.run(['apply'], environment);
+  assert.equal(applied.code, 1, applied.output);
+  untouched(h, applied);
+});
+
 test('without a Journey manifest the Journey Service is never restarted', async (t) => {
   const h = await host(t);
   assert.equal((await h.run(['apply'])).code, 0);

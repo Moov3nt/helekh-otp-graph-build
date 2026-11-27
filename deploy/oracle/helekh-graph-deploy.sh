@@ -162,9 +162,15 @@ restore() {
 
 preflight() {
   local tool
-  for tool in sha256sum "${ZSTD_DECOMPRESS%% *}" "$CURL" "$DOCKER"; do
+  for tool in sha256sum "$CURL" "$DOCKER"; do
     command -v "$tool" > /dev/null || refuse "$tool is missing"
   done
+  # only an installation decompresses; the other commands work without it and say so
+  tool=${ZSTD_DECOMPRESS%% *}
+  if ! command -v "$tool" > /dev/null; then
+    [[ "$1" != apply ]] || refuse "$tool is missing"
+    log "WARNING $tool is missing: apply would refuse"
+  fi
   [[ -f "$ACTIVE_GRAPH" ]] || refuse "no active graph at $ACTIVE_GRAPH"
   [[ "$(inspect "$OTP_CONTAINER" '{{.State.Status}}')" == running ]] || [[ -f "$MARKER" ]] || refuse "$OTP_CONTAINER is not running"
   [[ "$(inspect "$JOURNEY_CONTAINER" '{{.State.Status}}')" == running ]] || refuse "$JOURNEY_CONTAINER is not running"
@@ -347,7 +353,7 @@ main() {
   if [[ "$command" == apply || "$command" == rollback ]]; then
     [[ "$DEPLOY_ENABLED" == true ]] || refuse "deployment is not enabled (DEPLOY_ENABLED=true in $CONFIG)"
   fi
-  preflight
+  preflight "$command"
   if [[ -f "$MARKER" ]]; then
     [[ "$command" == apply || "$command" == rollback ]] || refuse "an interrupted deployment is pending; run 'apply' or 'rollback'"
     log "recovering an interrupted deployment"
