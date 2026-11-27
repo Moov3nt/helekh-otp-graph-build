@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily look for a newer qualified OTP graph
+
+# Night-time on the host (about one minute of routing interruption when there is something to install). The monitor runs
+# during the day, so a new graph is picked up the following night; run the service by hand to install it sooner.
+[Timer]
+OnCalendar=*-*-* 02:30:00 Europe/Rome
+RandomizedDelaySec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

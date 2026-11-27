@@ -1,0 +1,13 @@
+[Unit]
+Description=HELEKH OTP graph deployment (pulls a qualified published graph)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/helekh-graph-deploy.sh apply
+# exit 2 means the previous graph was restored: still a failed unit, so it is visible
+TimeoutStartSec=45min
+KillMode=mixed
+TimeoutStopSec=20min

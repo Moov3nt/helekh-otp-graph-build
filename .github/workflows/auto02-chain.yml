@@ -1,0 +1,181 @@
+name: AUTO-02 graph update chain
+
+# Links the existing AUTO-01 stages: monitor -> promotion -> conditional build and qualification -> published graph.
+# Nothing runs unless the repository variable AUTO02_ENABLED is exactly 'true'. It deploys nothing: the server pulls a
+# published graph by itself (deploy/oracle).
+on:
+  workflow_run:
+    workflows: ["Monitor mobility sources (observe only)"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      monitor_run_id:
+        description: "Monitor run to act on (manual re-run of the chain)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto02-milano-test
+  cancel-in-progress: false
+
+env:
+  TERRITORY: milano-test
+  MONITOR_RUN_ID: ${{ github.event.workflow_run.id || inputs.monitor_run_id }}
+
+jobs:
+  gate:
+    name: Decide
+    if: vars.AUTO02_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      sha256: ${{ steps.decide.outputs.sha256 }}
+      compare_with: ${{ steps.decide.outputs.compare_with }}
+    steps:
+      - name: Check out main without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Download the monitor report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: source-monitor-${{ env.MONITOR_RUN_ID }}
+          path: meta
+          run-id: ${{ env.MONITOR_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Decide what to do
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$MONITOR_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "::error::invalid monitor run ID"; exit 1; }
+          node scripts/auto02-chain.mjs decide --territory "$TERRITORY" --run-id "$MONITOR_RUN_ID" \
+            --report meta/source-candidate-report.json --out decision.json
+          {
+            echo "action=$(jq -r .action decision.json)"
+            echo "sha256=$(jq -r '.sha256 // ""' decision.json)"
+            echo "compare_with=$(jq -r '.compareWith // ""' decision.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "### AUTO-02 — $(jq -r .action decision.json): $(jq -r .reason decision.json)" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    name: Promote the new feed
+    needs: gate
+    if: needs.gate.outputs.action == 'PROMOTE'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      actions: write
+      contents: write
+    outputs:
+      base_sha: ${{ steps.promote.outputs.base_sha }}
+    steps:
+      - name: Check out main without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Run the existing promotion, verify it and fast-forward main
+        id: promote
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA256: ${{ needs.gate.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          node scripts/auto02-chain.mjs promote --territory "$TERRITORY" --run-id "$MONITOR_RUN_ID" \
+            --sha256 "$CANDIDATE_SHA256" --out promotion.json
+          echo "base_sha=$(jq -er .baseSha promotion.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and qualify
+    needs: [gate, promote]
+    if: >-
+      !cancelled() && needs.gate.result == 'success' &&
+      (needs.gate.outputs.action == 'RESUME' || needs.promote.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      build_run_id: ${{ steps.build.outputs.build_run_id }}
+      fingerprint: ${{ steps.build.outputs.fingerprint }}
+    steps:
+      - name: Check out the updated main without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Run the existing conditional build
+        id: build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COMPARE_WITH: ${{ needs.promote.outputs.base_sha || needs.gate.outputs.compare_with }}
+        run: |
+          set -euo pipefail
+          node scripts/auto02-chain.mjs build --territory "$TERRITORY" --compare-with "$COMPARE_WITH" --out build.json
+          echo "build_run_id=$(jq -er .buildRunId build.json)" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$(jq -er .fingerprint build.json)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish the qualified graph
+    needs: build
+    if: "!cancelled() && needs.build.result == 'success'"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out main without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Download the built graph
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: otp-graph-${{ env.TERRITORY }}-${{ needs.build.outputs.build_run_id }}
+          path: bundle
+          run-id: ${{ needs.build.outputs.build_run_id }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+      - name: Verify the bundle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ needs.build.outputs.build_run_id }}
+          FINGERPRINT: ${{ needs.build.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          node scripts/auto02-chain.mjs verify-graph --territory "$TERRITORY" --directory bundle \
+            --fingerprint "$FINGERPRINT" --build-run-id "$BUILD_RUN_ID" --out publication.json
+          expected=$(jq -er .graphSha256 publication.json)
+          actual=$(zstd -d --long=27 -q -c bundle/graph.obj.zst | sha256sum | awk '{print $1}')
+          [[ "$actual" == "$expected" ]] || { echo "::error::decompressed graph differs from the manifest"; exit 1; }
+      - name: Publish as one complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -er .tag publication.json)
+          if gh release view "$tag" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
+            if [[ "$(cat draft.txt)" == "false" ]]; then echo "already published: $tag"; exit 0; fi
+          else
+            gh release create "$tag" --draft --target "$(git rev-parse HEAD)" --title "Qualified OTP graph $tag" \
+              --notes "Built and qualified by AUTO-02. Usable until $(jq -r .usableUntil publication.json). See NOTICE.md for data licences."
+          fi
+          # assets first, publication last: the server never sees a partial release
+          gh release upload "$tag" --clobber bundle/graph.obj.zst bundle/manifest.json bundle/routing-check.json \
+            bundle/gtfs-validity-report.json bundle/NOTICE.md
+          gh release edit "$tag" --draft=false
+          echo "- published \`$tag\`, usable until $(jq -r .usableUntil publication.json)" >> "$GITHUB_STEP_SUMMARY"
